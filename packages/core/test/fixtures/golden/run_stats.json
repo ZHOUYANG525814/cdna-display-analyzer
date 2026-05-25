@@ -1,0 +1,26 @@
+{
+  "global_unassigned": 92,
+  "rounds": {
+    "Round_0": {
+      "discard_length_indel": 0,
+      "discard_stop_codon": 0,
+      "discard_truncated": 0,
+      "passed_qc": 459,
+      "total_assigned": 459
+    },
+    "Round_1": {
+      "discard_length_indel": 0,
+      "discard_stop_codon": 0,
+      "discard_truncated": 0,
+      "passed_qc": 449,
+      "total_assigned": 449
+    }
+  },
+  "schema_version": 1,
+  "unassigned_breakdown": {
+    "ambiguous": 0,
+    "barcode_mismatch": 0,
+    "low_quality": 42,
+    "no_anchor": 50
+  }
+}

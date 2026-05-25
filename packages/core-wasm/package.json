@@ -1,0 +1,31 @@
+{
+  "name": "@cdna/core-wasm",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Rust → WASM hot path for the demultiplex pipeline",
+  "main": "./pkg/cdna_core_wasm.js",
+  "types": "./pkg/cdna_core_wasm.d.ts",
+  "exports": {
+    ".": {
+      "types": "./pkg/cdna_core_wasm.d.ts",
+      "browser": "./pkg-web/cdna_core_wasm.js",
+      "import": "./pkg/cdna_core_wasm.js",
+      "require": "./pkg/cdna_core_wasm.js",
+      "default": "./pkg/cdna_core_wasm.js"
+    }
+  },
+  "files": [
+    "pkg/cdna_core_wasm.js",
+    "pkg/cdna_core_wasm.d.ts",
+    "pkg/cdna_core_wasm_bg.wasm",
+    "pkg/cdna_core_wasm_bg.wasm.d.ts",
+    "pkg-web/cdna_core_wasm.js",
+    "pkg-web/cdna_core_wasm_bg.js",
+    "pkg-web/cdna_core_wasm.d.ts",
+    "pkg-web/cdna_core_wasm_bg.wasm",
+    "pkg-web/cdna_core_wasm_bg.wasm.d.ts"
+  ],
+  "scripts": {
+    "build": "mamba run -n cdna-web wasm-pack build --target nodejs --release && mamba run -n cdna-web wasm-pack build --target bundler --release --out-dir pkg-web"
+  }
+}
