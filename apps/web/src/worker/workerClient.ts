@@ -42,6 +42,36 @@ export async function runInWorker(
   onProgress?: (msg: PipelineProgressMsg) => void,
 ): Promise<PipelineOutcome> {
   const a = ensureWorker();
+
+  // Diagnostic 1: confirm the job payload is structured-cloneable. If
+  // postMessage of the same data throws DataCloneError, Comlink swallows
+  // it and the await hangs — testing here surfaces the real reason.
+  try {
+    const cloned = structuredClone({
+      localFiles: job.localFiles,
+      driveFiles: job.driveFiles,
+      rounds: job.rounds,
+      settings: job.settings,
+      useWasm: job.useWasm,
+    });
+    console.log("[main] structuredClone(job) succeeded", {
+      clonedFiles: (cloned as { localFiles: File[] }).localFiles.length,
+    });
+  } catch (cloneErr) {
+    console.error("[main] structuredClone(job) FAILED — this is why the worker is hung:", cloneErr);
+  }
+
+  // Diagnostic 2: send a raw ping via direct postMessage to verify the
+  // basic worker channel works, separate from Comlink.
+  if (workerInstance) {
+    try {
+      workerInstance.postMessage({ __ping: "from-main", ts: Date.now() });
+      console.log("[main] raw ping postMessage sent to worker");
+    } catch (pingErr) {
+      console.error("[main] raw ping postMessage FAILED:", pingErr);
+    }
+  }
+
   // Comlink.proxy lets the worker call back into our progress handler.
   const progress = onProgress ? Comlink.proxy(onProgress) : undefined;
   console.log("[main] runInWorker → calling worker.run() …", {
