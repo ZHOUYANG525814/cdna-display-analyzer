@@ -63,8 +63,6 @@ export function RunStep() {
           useWasm: s.useWasm,
         },
         (p) => useRunStore.getState().updateProgress(p),
-        // Worker-side diagnostic logs surface into the run log panel.
-        (msg) => useRunStore.getState().appendLog({ text: `[worker] ${msg}`, tag: "info" }),
       );
       const passed = Object.values(outcome.statsByRound).reduce(
         (acc, r) => acc + r.passed_qc,

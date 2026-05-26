@@ -53,14 +53,8 @@ const api = {
   async run(
     job: PipelineJob,
     onProgress?: (msg: PipelineProgressMsg) => void,
-    onLog?: (msg: string) => void,
   ): Promise<PipelineOutcome> {
-    // Mirror every wlog into the in-app log panel so the user sees them too,
-    // not just devs with DevTools open.
-    const log = (m: string, extra?: unknown) => {
-      wlog(m, extra);
-      onLog?.(extra !== undefined ? `${m} ${JSON.stringify(extra)}` : m);
-    };
+    const log = (m: string, extra?: unknown) => wlog(m, extra);
 
     try {
       log("run() entered", {
@@ -148,7 +142,6 @@ const api = {
       const err = e as Error;
       const msg = `worker run() threw: ${err.name}: ${err.message}\n${err.stack ?? "(no stack)"}`;
       console.error(`[worker] ${msg}`);
-      onLog?.(msg);
       throw e;
     }
   },

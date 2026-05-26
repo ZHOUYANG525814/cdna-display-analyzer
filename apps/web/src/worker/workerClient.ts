@@ -40,13 +40,23 @@ function ensureWorker(): Comlink.Remote<PipelineWorkerApi> {
 export async function runInWorker(
   job: PipelineJob,
   onProgress?: (msg: PipelineProgressMsg) => void,
-  onLog?: (msg: string) => void,
 ): Promise<PipelineOutcome> {
   const a = ensureWorker();
   // Comlink.proxy lets the worker call back into our progress handler.
   const progress = onProgress ? Comlink.proxy(onProgress) : undefined;
-  const log = onLog ? Comlink.proxy(onLog) : undefined;
-  return await a.run(job, progress, log);
+  console.log("[main] runInWorker → calling worker.run() …", {
+    localFiles: job.localFiles.length,
+    driveFiles: job.driveFiles.length,
+    hasProgress: !!progress,
+  });
+  try {
+    const result = await a.run(job, progress);
+    console.log("[main] runInWorker ← worker.run() returned");
+    return result;
+  } catch (err) {
+    console.error("[main] runInWorker ← worker.run() threw", err);
+    throw err;
+  }
 }
 
 export function terminateWorker(): void {
