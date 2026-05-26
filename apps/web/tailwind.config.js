@@ -59,13 +59,19 @@ export default {
       },
       fontFamily: {
         sans: [
-          "Inter",
+          "IBM Plex Sans",
           "ui-sans-serif",
           "system-ui",
           "-apple-system",
           "sans-serif",
         ],
-        mono: ["JetBrains Mono", "ui-monospace", "Menlo", "Consolas", "monospace"],
+        mono: [
+          "IBM Plex Mono",
+          "ui-monospace",
+          "Menlo",
+          "Consolas",
+          "monospace",
+        ],
       },
       keyframes: {
         "accordion-down": {

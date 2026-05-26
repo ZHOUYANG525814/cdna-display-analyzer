@@ -8,7 +8,9 @@ import { exportOutcome } from "@/adapters/BrowserExporter";
 import { FilterFunnelSankey } from "@/tools/cdna-display/viz/FilterFunnelSankey";
 import { CountHistogram } from "@/tools/cdna-display/viz/CountHistogram";
 import { EnrichmentScatter } from "@/tools/cdna-display/viz/EnrichmentScatter";
-import { HammingClusters } from "@/tools/cdna-display/viz/HammingClusters";
+import { RankAbundance } from "@/tools/cdna-display/viz/RankAbundance";
+import { SequenceLogo } from "@/tools/cdna-display/viz/SequenceLogo";
+import { VolcanoPlot } from "@/tools/cdna-display/viz/VolcanoPlot";
 import { parseEnrichmentMatrix } from "@/tools/cdna-display/viz/csvParse";
 
 export function ResultsStep() {
@@ -104,7 +106,6 @@ export function ResultsStep() {
                   <th className="pb-2 pr-4 font-medium">Round</th>
                   <th className="pb-2 pr-4 font-medium text-right">Assigned</th>
                   <th className="pb-2 pr-4 font-medium text-right">Truncated</th>
-                  <th className="pb-2 pr-4 font-medium text-right">Frameshift</th>
                   <th className="pb-2 pr-4 font-medium text-right">Stop</th>
                   <th className="pb-2 pr-4 font-medium text-right">Passed</th>
                   <th className="pb-2 font-medium">Yield</th>
@@ -119,7 +120,6 @@ export function ResultsStep() {
                       <td className="py-2 pr-4 font-mono text-xs">{r}</td>
                       <td className="py-2 pr-4 text-right font-mono text-xs">{s.total_assigned.toLocaleString()}</td>
                       <td className="py-2 pr-4 text-right font-mono text-xs">{s.discard_truncated.toLocaleString()}</td>
-                      <td className="py-2 pr-4 text-right font-mono text-xs">{s.discard_length_indel.toLocaleString()}</td>
                       <td className="py-2 pr-4 text-right font-mono text-xs">{s.discard_stop_codon.toLocaleString()}</td>
                       <td className="py-2 pr-4 text-right font-mono text-xs text-success">{s.passed_qc.toLocaleString()}</td>
                       <td className="py-2 w-40">
@@ -158,6 +158,27 @@ export function ResultsStep() {
       {parsedMatrix.rows.length > 0 && (
         <Card>
           <CardHeader>
+            <CardTitle>Rank-abundance</CardTitle>
+            <CardDescription>
+              Each peptide ranked by RPM, plotted log–log. A straight line ≈
+              power-law (selection has converged on a few dominant peptides);
+              a concave curve ≈ log-normal (library is still diverse). The
+              Gini coefficient summarises inequality (0 = uniform, 1 = one
+              peptide dominates); α is the fitted power-law exponent.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <RankAbundance
+              rows={parsedMatrix.rows}
+              roundNames={parsedMatrix.roundNames}
+            />
+          </CardContent>
+        </Card>
+      )}
+
+      {parsedMatrix.rows.length > 0 && (
+        <Card>
+          <CardHeader>
             <CardTitle>Read-count distribution per round</CardTitle>
             <CardDescription>
               Histogram of how often each unique peptide appears, on a log₁₀
@@ -168,6 +189,27 @@ export function ResultsStep() {
           </CardHeader>
           <CardContent>
             <CountHistogram
+              rows={parsedMatrix.rows}
+              roundNames={parsedMatrix.roundNames}
+            />
+          </CardContent>
+        </Card>
+      )}
+
+      {parsedMatrix.rows.length > 0 && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Sequence logo</CardTitle>
+            <CardDescription>
+              Per-position amino-acid composition of the top 100 peptides in
+              each round, restricted to the modal length so positions align.
+              Letter height is information content (bits) × frequency: tall
+              stacks are conserved positions, short stacks are variable.
+              Colors follow the Clustal biochemistry palette.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <SequenceLogo
               rows={parsedMatrix.rows}
               roundNames={parsedMatrix.roundNames}
             />
@@ -195,18 +237,20 @@ export function ResultsStep() {
         </Card>
       )}
 
-      {parsedMatrix.rows.length > 0 && (
+      {parsedMatrix.rows.length > 0 && parsedMatrix.roundNames.length >= 2 && (
         <Card>
           <CardHeader>
-            <CardTitle>Top-200 Hamming clusters</CardTitle>
+            <CardTitle>Volcano plot — statistical significance</CardTitle>
             <CardDescription>
-              The 200 most-enriched peptides clustered by ≤ 2 amino-acid
-              differences. A few large clusters = a converged selection;
-              many singletons = a still-diverse library.
+              For each peptide, a one-sided Fisher's exact test (or
+              Yates-corrected χ² for large counts) compares its count in the
+              later vs earlier round, with Benjamini–Hochberg FDR correction.
+              Red points clear both FDR &lt; 0.05 and log₂FC &gt; 1
+              (≥ 2× enrichment) — these are the publication-grade hits.
             </CardDescription>
           </CardHeader>
           <CardContent>
-            <HammingClusters
+            <VolcanoPlot
               rows={parsedMatrix.rows}
               roundNames={parsedMatrix.roundNames}
             />

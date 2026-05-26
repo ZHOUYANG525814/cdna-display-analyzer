@@ -1,10 +1,15 @@
 // Sankey diagram of the read-filtering funnel:
 //   Total reads → {low_quality | no_anchor | ambiguous | barcode_mismatch | per-round assigned}
-//   per-round assigned → {discard_truncated | discard_length_indel | discard_stop_codon | passed_qc}
+//   per-round assigned → {discard_truncated | discard_stop_codon | passed_qc}
 //
 // Read this as "which buckets are bleeding reads": wide bands going to discards
 // mean tightening primers or QC thresholds would help; wide bands to passed_qc
 // mean the library + chemistry are good.
+//
+// Note: discard_length_indel is intentionally omitted — when the CDS window is
+// frozen by absolute offsets from the Fw anchor end, the engine cannot detect
+// length indels independently, so the bucket is always zero and would clutter
+// the diagram.
 
 import { useMemo } from "react";
 import { Sankey, Tooltip, ResponsiveContainer } from "recharts";
@@ -30,7 +35,7 @@ function classifyNode(name: string): string {
   if (name === "Total reads") return COLOR_TOTAL;
   if (name.startsWith("Round_")) return COLOR_ROUND;
   if (name.startsWith("Passed QC ")) return COLOR_PASSED;
-  if (name.startsWith("Truncated ") || name.startsWith("Indel ") || name.startsWith("Stop "))
+  if (name.startsWith("Truncated ") || name.startsWith("Stop "))
     return COLOR_DISCARD;
   return COLOR_UNASSIGNED;
 }
@@ -115,7 +120,6 @@ function buildSankeyData(outcome: PipelineOutcome): SankeyData {
     addLink(total, rNode, s.total_assigned);
 
     addLink(rNode, addNode(`Truncated · ${roundName}`), s.discard_truncated);
-    addLink(rNode, addNode(`Indel · ${roundName}`), s.discard_length_indel);
     addLink(rNode, addNode(`Stop · ${roundName}`), s.discard_stop_codon);
     addLink(rNode, addNode(`Passed QC · ${roundName}`), s.passed_qc);
   }

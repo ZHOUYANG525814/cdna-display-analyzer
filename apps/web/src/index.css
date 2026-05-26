@@ -51,7 +51,14 @@
     @apply border-border;
   }
   body {
-    @apply bg-background text-foreground antialiased;
-    font-feature-settings: "rlig" 1, "calt" 1, "ss01" 1;
+    @apply bg-background text-foreground antialiased font-sans;
+    /* IBM Plex Sans / Mono — well-balanced grotesque w/ excellent numerals.
+     * "tnum" forces tabular numerals so the per-round counts + yield columns
+     * line up cleanly. "ss03" toggles the round-a alternates in Plex Sans;
+     * "zero" puts a slash through 0 to disambiguate from O in the mono. */
+    font-feature-settings: "tnum" 1, "ss03" 1, "calt" 1;
+  }
+  code, pre, .font-mono {
+    font-feature-settings: "tnum" 1, "zero" 1, "calt" 1;
   }
 }
