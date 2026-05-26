@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { FolderOpen, FileText, Cloud, X, ArrowRight } from "lucide-react";
 import { useRunStore } from "@/state/useRunStore";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -216,32 +216,63 @@ VITE_GOOGLE_API_KEY=…`}
     );
   }
 
-  const onPick = async () => {
-    if (!API_KEY) {
-      setError("VITE_GOOGLE_API_KEY is not configured.");
-      return;
-    }
+  const openPicker = async (token: string): Promise<void> => {
     setBusy(true);
     setError(null);
-    console.log("[drive] onPick: starting OAuth + Picker flow");
     try {
-      console.log("[drive] requesting OAuth token …");
-      const token = await authRef.current!.getToken();
-      console.log("[drive] token received (length=" + token.length + ", prefix=" + token.slice(0, 8) + "…)");
       (window as unknown as { __drive_token?: string }).__drive_token = token;
       console.log("[drive] opening Picker …");
-      const picked = await showDrivePicker({ oauthToken: token, apiKey: API_KEY });
-      console.log("[drive] Picker closed; picked " + picked.length + " file(s)", picked);
+      const picked = await showDrivePicker({ oauthToken: token, apiKey: API_KEY! });
+      console.log(`[drive] Picker closed; picked ${picked.length} file(s)`, picked);
       if (picked.length > 0) {
         setDriveFiles(picked.map((p) => ({ id: p.id, name: p.name, sizeBytes: p.sizeBytes })));
       }
     } catch (e: unknown) {
-      console.error("[drive] onPick failed:", e);
+      console.error("[drive] picker failed:", e);
       setError((e as Error).message);
     } finally {
       setBusy(false);
     }
   };
+
+  const onPick = async () => {
+    if (!API_KEY) {
+      setError("VITE_GOOGLE_API_KEY is not configured.");
+      return;
+    }
+    const auth = authRef.current!;
+    // If we already have a valid token (from earlier or restored from
+    // sessionStorage after a redirect), just open the picker directly.
+    if (auth.isSignedIn()) {
+      console.log("[drive] already signed in; opening picker directly");
+      await openPicker(await auth.getToken());
+      return;
+    }
+    // Otherwise, mark our intent and trigger the OAuth redirect. The page
+    // will navigate to Google and back; on return, the useEffect below
+    // detects the pending action and reopens the picker automatically.
+    console.log("[drive] not signed in; saving 'open_picker' and redirecting to Google");
+    DriveAuthProvider.setPendingAction("open_picker");
+    setBusy(true);
+    void auth.getToken(); // never resolves — navigates away
+  };
+
+  // After the OAuth redirect returns, our DriveAuthProvider constructor has
+  // already parsed the access token from the URL fragment. If we'd queued
+  // "open_picker" before the redirect, resume that action now.
+  useEffect(() => {
+    const auth = authRef.current;
+    if (!auth || !API_KEY) return;
+    const pending = DriveAuthProvider.consumePendingAction();
+    if (pending === "open_picker" && auth.isSignedIn()) {
+      console.log("[drive] resuming pending action 'open_picker' after OAuth return");
+      void (async () => {
+        const token = await auth.getToken();
+        await openPicker(token);
+      })();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   return (
     <div className="mt-4 flex flex-col gap-3">
