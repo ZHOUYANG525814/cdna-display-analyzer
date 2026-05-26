@@ -163,3 +163,18 @@ try {
 } catch (e: unknown) {
   console.error("[worker] Comlink.expose() threw:", e);
 }
+
+// Heartbeat: send a message every 2 seconds. If the main thread receives
+// these but our raw listener never fires for inbound messages, the channel
+// is one-way (Vercel bundling/isolation issue). If neither direction works,
+// the worker is fully isolated from the main thread.
+let heartbeatCount = 0;
+setInterval(() => {
+  heartbeatCount++;
+  try {
+    self.postMessage({ __heartbeat: heartbeatCount, ts: Date.now() });
+  } catch (e) {
+    console.error("[worker] heartbeat postMessage threw:", e);
+  }
+}, 2000);
+wlog("heartbeat interval started (every 2s)");

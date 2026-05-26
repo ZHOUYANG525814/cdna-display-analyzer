@@ -32,6 +32,18 @@ function ensureWorker(): Comlink.Remote<PipelineWorkerApi> {
       console.error(msg, e);
       onErrorHandler?.(msg);
     };
+    // Heartbeat listener: see if the worker can send messages out at all.
+    // Comlink wraps this same channel; if our own listener catches messages
+    // but Comlink's calls hang, the issue is Comlink-specific.
+    workerInstance.addEventListener("message", (e: MessageEvent) => {
+      if (e.data && typeof e.data === "object" && "__heartbeat" in e.data) {
+        const count = (e.data as { __heartbeat: number; ts: number }).__heartbeat;
+        if (count <= 3) {
+          // Log the first few then quiet down so the console isn't spammed.
+          console.log("[main] heartbeat received from worker:", e.data);
+        }
+      }
+    });
     api = Comlink.wrap<PipelineWorkerApi>(workerInstance);
   }
   return api;
