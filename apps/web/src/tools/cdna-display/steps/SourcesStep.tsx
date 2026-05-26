@@ -222,7 +222,15 @@ VITE_GOOGLE_API_KEY=…`}
     try {
       (window as unknown as { __drive_token?: string }).__drive_token = token;
       console.log("[drive] opening Picker …");
-      const picked = await showDrivePicker({ oauthToken: token, apiKey: API_KEY! });
+      // Project number = numeric prefix of the OAuth client ID (everything
+      // up to the first '-'). The Picker needs it to register the per-file
+      // grant against the right OAuth client.
+      const projectNumber = (CLIENT_ID ?? "").split("-")[0]!;
+      const picked = await showDrivePicker({
+        oauthToken: token,
+        apiKey: API_KEY!,
+        appId: projectNumber,
+      });
       console.log(`[drive] Picker closed; picked ${picked.length} file(s)`, picked);
       if (picked.length > 0) {
         setDriveFiles(picked.map((p) => ({ id: p.id, name: p.name, sizeBytes: p.sizeBytes })));

@@ -55,6 +55,11 @@ export interface PickedFile {
 export interface ShowPickerOptions {
   oauthToken: string;
   apiKey: string;
+  /** Google Cloud project number — the numeric prefix of your OAuth client ID.
+   *  Required so the Picker registers the per-file grant against the right
+   *  OAuth client. Without it, the user picks files via the Picker UI but
+   *  `files.get` returns 404. */
+  appId: string;
   /** Hint for what to show; defaults to a Drive view filtered to *.fastq / *.fq. */
   title?: string;
 }
@@ -94,6 +99,7 @@ export async function showDrivePicker(opts: ShowPickerOptions): Promise<PickedFi
         .addView(sharedWithMe)
         .setOAuthToken(opts.oauthToken)
         .setDeveloperKey(opts.apiKey)
+        .setAppId(opts.appId)
         .setTitle(opts.title ?? "Select FASTQ files from Drive")
         .enableFeature(picker.Feature.MULTISELECT_ENABLED)
         .enableFeature(picker.Feature.SUPPORT_DRIVES)

@@ -25,6 +25,10 @@ declare global {
     addView(view: GooglePickerView): GooglePickerBuilder;
     setOAuthToken(token: string): GooglePickerBuilder;
     setDeveloperKey(key: string): GooglePickerBuilder;
+    /** Google Cloud project number (numeric prefix of the OAuth client ID).
+     *  Required for the Picker to register the per-file grant against the
+     *  right OAuth client; without it, files.get returns 404. */
+    setAppId(appId: string): GooglePickerBuilder;
     setCallback(cb: (resp: GooglePickerCallback) => void): GooglePickerBuilder;
     setTitle(title: string): GooglePickerBuilder;
     enableFeature(feature: string): GooglePickerBuilder;
