@@ -44,6 +44,11 @@ export interface RoundForm {
   rvPrimer: string;
   cdsStart: number | null;
   cdsEnd: number | null;
+  /** Per-round FASTQ. Only used when pipelineMode === "per-round" — each
+   *  round owns its source file in that mode, so the binding can never
+   *  drift. In multiplexed mode this field is unused (sources come from
+   *  localFiles + driveFiles instead). */
+  file: File | null;
 }
 
 // PreviewResult + PreviewStatus live in the cDNA tool module; re-export so
@@ -66,10 +71,6 @@ interface RunState {
   filterStop: boolean;
   useWasm: boolean;
   pipelineMode: PipelineMode;
-  /** In per-round mode, maps each source's display name (File.name or Drive
-   *  file name) → the round it's bound to. In multiplexed mode this is
-   *  ignored. */
-  fileToRound: Record<string, string>;
 
   // Step 3 — preview
   /** Estimated read length, sampled from the first FASTQ during preview. */
@@ -107,7 +108,6 @@ interface RunState {
   setFilterStop: (v: boolean) => void;
   setUseWasm: (v: boolean) => void;
   setPipelineMode: (m: PipelineMode) => void;
-  setFileRound: (fileName: string, round: string) => void;
 
   setPreview: (estReadLen: number, results: PreviewResult[]) => void;
   clearPreview: () => void;
@@ -134,6 +134,7 @@ function defaultRound(idx: number): RoundForm {
     rvPrimer: "",
     cdsStart: null,
     cdsEnd: null,
+    file: null,
   };
 }
 
@@ -150,7 +151,6 @@ export const useRunStore = create<RunState>((set, get) => ({
   filterStop: true,
   useWasm: true,
   pipelineMode: "multiplexed",
-  fileToRound: {},
 
   estimatedReadLength: 150,
   previewResults: [],
@@ -193,8 +193,6 @@ export const useRunStore = create<RunState>((set, get) => ({
   setFilterStop: (v) => set({ filterStop: v }),
   setUseWasm: (v) => set({ useWasm: v }),
   setPipelineMode: (m) => set({ pipelineMode: m }),
-  setFileRound: (fileName, round) =>
-    set((s) => ({ fileToRound: { ...s.fileToRound, [fileName]: round } })),
 
   setPreview: (estReadLen, results) =>
     set({ estimatedReadLength: estReadLen, previewResults: results }),
@@ -231,7 +229,6 @@ export const useRunStore = create<RunState>((set, get) => ({
       referenceSeq: "",
       rounds: [defaultRound(0), defaultRound(1)],
       pipelineMode: "multiplexed",
-      fileToRound: {},
       previewResults: [],
       status: "idle",
       progress: null,

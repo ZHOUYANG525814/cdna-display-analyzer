@@ -30,10 +30,9 @@ export function SourcesStep() {
     setStep,
     pipelineMode,
     setPipelineMode,
-    fileToRound,
-    setFileRound,
   } = useRunStore();
   const totalFiles = localFiles.length + driveFiles.length;
+  const perRound = pipelineMode === "per-round";
   const inputRef = useRef<HTMLInputElement>(null);
   const [dragActive, setDragActive] = useState(false);
   const [demoBusy, setDemoBusy] = useState(false);
@@ -143,6 +142,20 @@ export function SourcesStep() {
         </CardContent>
       </Card>
 
+      {perRound && (
+        <Card className="border-primary/30 bg-primary/5">
+          <CardHeader>
+            <CardTitle className="text-base">FASTQ sources — configured per round</CardTitle>
+            <CardDescription>
+              In per-round mode, each round picks its own FASTQ in the
+              <span className="font-medium"> Configure</span> step. There's
+              nothing to do on this page — continue when you're ready.
+            </CardDescription>
+          </CardHeader>
+        </Card>
+      )}
+
+      {!perRound && (
       <Card>
         <CardHeader>
           <CardTitle>FASTQ sources</CardTitle>
@@ -222,16 +235,7 @@ export function SourcesStep() {
                       <Badge variant="secondary">local</Badge>
                       <span className="truncate font-mono text-xs">{f.name}</span>
                     </div>
-                    <div className="flex shrink-0 items-center gap-3">
-                      {pipelineMode === "per-round" && (
-                        <RoundSelector
-                          rounds={rounds}
-                          value={fileToRound[f.name]}
-                          onChange={(r) => setFileRound(f.name, r)}
-                        />
-                      )}
-                      <span className="text-xs text-muted-foreground">{formatBytes(f.size)}</span>
-                    </div>
+                    <span className="text-xs text-muted-foreground">{formatBytes(f.size)}</span>
                   </li>
                 ))}
                 {driveFiles.map((d) => (
@@ -240,34 +244,24 @@ export function SourcesStep() {
                       <Badge>drive</Badge>
                       <span className="truncate font-mono text-xs">{d.name}</span>
                     </div>
-                    <div className="flex shrink-0 items-center gap-3">
-                      {pipelineMode === "per-round" && (
-                        <RoundSelector
-                          rounds={rounds}
-                          value={fileToRound[d.name]}
-                          onChange={(r) => setFileRound(d.name, r)}
-                        />
-                      )}
-                      <span className="text-xs text-muted-foreground">
-                        {d.sizeBytes != null ? formatBytes(d.sizeBytes) : "—"}
-                      </span>
-                    </div>
+                    <span className="text-xs text-muted-foreground">
+                      {d.sizeBytes != null ? formatBytes(d.sizeBytes) : "—"}
+                    </span>
                   </li>
                 ))}
               </ul>
-              {pipelineMode === "per-round" && (
-                <p className="mt-2 text-xs text-muted-foreground">
-                  In per-round mode, every file must be bound to a round before
-                  the run can start. Define rounds + primers in the next step.
-                </p>
-              )}
             </div>
           )}
         </CardContent>
       </Card>
+      )}
 
       <div className="flex justify-end">
-        <Button size="lg" disabled={totalFiles === 0} onClick={goNext}>
+        <Button
+          size="lg"
+          disabled={!perRound && totalFiles === 0}
+          onClick={goNext}
+        >
           Continue <ArrowRight className="ml-1.5 h-4 w-4" />
         </Button>
       </div>
@@ -464,30 +458,3 @@ function ModeOption({
   );
 }
 
-function RoundSelector({
-  rounds,
-  value,
-  onChange,
-}: {
-  rounds: { id: string; name: string }[];
-  value: string | undefined;
-  onChange: (r: string) => void;
-}) {
-  return (
-    <select
-      value={value ?? ""}
-      onChange={(e) => onChange(e.target.value)}
-      className="h-7 rounded border bg-background px-2 text-xs font-mono"
-      title="Bind this file to a round"
-    >
-      <option value="" disabled>
-        choose round…
-      </option>
-      {rounds.map((r) => (
-        <option key={r.id} value={r.name}>
-          {r.name}
-        </option>
-      ))}
-    </select>
-  );
-}

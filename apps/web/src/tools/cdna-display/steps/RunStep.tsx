@@ -24,7 +24,21 @@ export function RunStep() {
   const localFiles = useRunStore((s) => s.localFiles);
   const driveFiles = useRunStore((s) => s.driveFiles);
   const rounds = useRunStore((s) => s.rounds);
-  const total = localFiles.length + driveFiles.length;
+  const pipelineMode = useRunStore((s) => s.pipelineMode);
+  // In per-round mode the user-facing source list comes from rounds[i].file,
+  // not the (unused) localFiles array. Compute a unified view for the UI.
+  const uiSources = useMemo(() => {
+    if (pipelineMode === "per-round") {
+      return rounds
+        .filter((r) => r.file != null)
+        .map((r) => ({ name: r.file!.name, totalBytes: r.file!.size }));
+    }
+    return [
+      ...localFiles.map((f) => ({ name: f.name, totalBytes: f.size as number | null })),
+      ...driveFiles.map((d) => ({ name: d.name, totalBytes: d.sizeBytes })),
+    ];
+  }, [pipelineMode, rounds, localFiles, driveFiles]);
+  const total = uiSources.length;
 
   // Pipe worker bundle/import errors into the run log so they're visible.
   useEffect(() => {
@@ -43,47 +57,45 @@ export function RunStep() {
       cdsEnd: r.cdsEnd!,
     }));
 
-    // Per-round mode: convert the file→round name mapping into a parallel
-    // index array matching [...localFiles, ...driveFiles]. A missing binding
-    // for any file aborts before launching the worker — otherwise that file
-    // would be silently dropped in the per-round branch of pipeline.ts.
+    // Two ways the job assembles `localFiles` + `sourceRoundIndices`:
+    //
+    //  - multiplexed: read directly from the store's localFiles + driveFiles.
+    //    sourceRoundIndices is omitted; pipeline.ts demultiplexes by barcode.
+    //
+    //  - per-round: pull one File per round from `rounds[i].file`, mirroring
+    //    the order so sourceRoundIndices[i] === i. The store's localFiles is
+    //    ignored in this mode (the Sources step explicitly tells the user so).
+    let jobLocalFiles: File[];
+    let jobDriveFiles = s.driveFiles;
     let sourceRoundIndices: number[] | undefined;
     if (s.pipelineMode === "per-round") {
-      const nameToIdx = new Map(roundsCfg.map((r, i) => [r.name, i]));
-      const sourceNames = [
-        ...s.localFiles.map((f) => f.name),
-        ...s.driveFiles.map((d) => d.name),
-      ];
-      const indices: number[] = [];
-      const unbound: string[] = [];
-      for (const name of sourceNames) {
-        const round = s.fileToRound[name];
-        const idx = round != null ? nameToIdx.get(round) : undefined;
-        if (idx == null) unbound.push(name);
-        else indices.push(idx);
-      }
-      if (unbound.length > 0) {
-        const msg = `Per-round mode: these files are not bound to a round: ${unbound.join(", ")}`;
+      const missing = s.rounds.filter((r) => r.file == null).map((r) => r.name);
+      if (missing.length > 0) {
+        const msg = `Per-round mode: these rounds have no FASTQ bound: ${missing.join(", ")}`;
         s.appendLog({ text: msg, tag: "error" });
         s.failRun(msg);
         return;
       }
-      sourceRoundIndices = indices;
+      jobLocalFiles = s.rounds.map((r) => r.file!);
+      jobDriveFiles = []; // Drive isn't part of per-round mode yet.
+      sourceRoundIndices = s.rounds.map((_, i) => i);
+    } else {
+      jobLocalFiles = s.localFiles;
     }
 
     s.startRun();
     s.appendLog({
       text:
         `Pipeline started · mode=${s.pipelineMode} · ${roundsCfg.length} round(s) · ` +
-        `${s.localFiles.length + s.driveFiles.length} file(s) · WASM=${s.useWasm}`,
+        `${jobLocalFiles.length + jobDriveFiles.length} file(s) · WASM=${s.useWasm}`,
       tag: "info",
     });
     try {
       const driveToken = (window as unknown as { __drive_token?: string }).__drive_token;
       const outcome = await runInWorker(
         {
-          localFiles: s.localFiles,
-          driveFiles: s.driveFiles,
+          localFiles: jobLocalFiles,
+          driveFiles: jobDriveFiles,
           ...(driveToken ? { driveToken } : {}),
           rounds: roundsCfg,
           settings: {
@@ -120,13 +132,7 @@ export function RunStep() {
     s.appendLog({ text: "Cancelled by user — worker terminated.", tag: "warning" });
   }, []);
 
-  const sources = useMemo(
-    () => [
-      ...localFiles.map((f) => ({ name: f.name, totalBytes: f.size })),
-      ...driveFiles.map((d) => ({ name: d.name, totalBytes: d.sizeBytes })),
-    ],
-    [localFiles, driveFiles],
-  );
+  const sources = uiSources;
 
   const showProgress = status === "running" || status === "done" || status === "cancelled";
 
@@ -234,13 +240,19 @@ function OverallProgress() {
   const perSourceBytes = useRunStore((s) => s.perSourceBytes);
   const localFiles = useRunStore((s) => s.localFiles);
   const driveFiles = useRunStore((s) => s.driveFiles);
+  const pipelineMode = useRunStore((s) => s.pipelineMode);
+  const rounds = useRunStore((s) => s.rounds);
 
   const totalKnownBytes = useMemo(() => {
     let t = 0;
-    for (const f of localFiles) t += f.size;
-    for (const d of driveFiles) if (d.sizeBytes != null) t += d.sizeBytes;
+    if (pipelineMode === "per-round") {
+      for (const r of rounds) if (r.file) t += r.file.size;
+    } else {
+      for (const f of localFiles) t += f.size;
+      for (const d of driveFiles) if (d.sizeBytes != null) t += d.sizeBytes;
+    }
     return t;
-  }, [localFiles, driveFiles]);
+  }, [pipelineMode, rounds, localFiles, driveFiles]);
 
   let bytesDone = 0;
   for (const v of Object.values(perSourceBytes)) bytesDone += v;

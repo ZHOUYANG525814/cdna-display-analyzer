@@ -1,5 +1,5 @@
 import { useRef } from "react";
-import { ArrowLeft, ArrowRight, Plus, Trash2, FileUp } from "lucide-react";
+import { ArrowLeft, ArrowRight, Plus, Trash2, FileUp, X } from "lucide-react";
 import { useRunStore } from "@/state/useRunStore";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -22,11 +22,13 @@ export function ConfigureStep() {
     setFilterStop,
     useWasm,
     setUseWasm,
+    pipelineMode,
     goPrev,
     goNext,
   } = useRunStore();
 
   const fastaInput = useRef<HTMLInputElement>(null);
+  const perRound = pipelineMode === "per-round";
 
   const onFasta = async (file: File) => {
     const text = await file.text();
@@ -41,7 +43,12 @@ export function ConfigureStep() {
 
   const refValid = referenceSeq.length >= 30;
   const allRoundsValid = rounds.every(
-    (r) => r.fwPrimer.length >= 10 && r.rvPrimer.length >= 10 && r.name.length > 0,
+    (r) =>
+      r.fwPrimer.length >= 10 &&
+      r.rvPrimer.length >= 10 &&
+      r.name.length > 0 &&
+      // In per-round mode, every round must have a FASTQ bound to it.
+      (!perRound || r.file != null),
   );
 
   return (
@@ -93,7 +100,14 @@ export function ConfigureStep() {
       <Card>
         <CardHeader className="flex flex-row items-center justify-between space-y-0">
           <div>
-            <CardTitle>Rounds</CardTitle>
+            <CardTitle className="flex items-center gap-2">
+              Rounds
+              {perRound && (
+                <Badge variant="outline" className="font-normal">
+                  per-round mode · each round picks its own FASTQ
+                </Badge>
+              )}
+            </CardTitle>
             <CardDescription>
               Define one round per selection step. Round 0 is the unselected library by convention.
             </CardDescription>
@@ -154,6 +168,13 @@ export function ConfigureStep() {
                   />
                 </div>
               </div>
+              {perRound && (
+                <RoundFilePicker
+                  file={r.file}
+                  onPick={(f) => updateRound(r.id, { file: f })}
+                  onClear={() => updateRound(r.id, { file: null })}
+                />
+              )}
               <p className="text-xs text-muted-foreground">
                 CDS Start / End are set in the next step, where you see the aligned region.
               </p>
@@ -221,4 +242,67 @@ function ToggleRow({
       <span>{label}</span>
     </label>
   );
+}
+
+function RoundFilePicker({
+  file,
+  onPick,
+  onClear,
+}: {
+  file: File | null;
+  onPick: (f: File) => void;
+  onClear: () => void;
+}) {
+  const inputRef = useRef<HTMLInputElement>(null);
+  const ok = file != null;
+  return (
+    <div className="rounded-md border bg-muted/30 p-3">
+      <Label className="text-xs">FASTQ for this round</Label>
+      <div className="mt-1.5 flex flex-wrap items-center gap-2">
+        <Button
+          type="button"
+          variant={ok ? "outline" : "default"}
+          size="sm"
+          onClick={() => inputRef.current?.click()}
+        >
+          <FileUp className="mr-1.5 h-3.5 w-3.5" />
+          {ok ? "Replace…" : "Pick FASTQ…"}
+        </Button>
+        <input
+          ref={inputRef}
+          type="file"
+          accept=".fastq,.fq"
+          className="hidden"
+          onChange={(e) => {
+            const f = e.target.files?.[0];
+            if (f) onPick(f);
+            // Reset so picking the same file twice still fires onChange.
+            if (inputRef.current) inputRef.current.value = "";
+          }}
+        />
+        {ok ? (
+          <>
+            <span className="truncate font-mono text-xs text-muted-foreground" title={file!.name}>
+              {file!.name}
+            </span>
+            <span className="text-xs text-muted-foreground">
+              · {formatBytes(file!.size)}
+            </span>
+            <Button type="button" size="sm" variant="ghost" onClick={onClear}>
+              <X className="h-3.5 w-3.5" />
+            </Button>
+          </>
+        ) : (
+          <span className="text-xs text-muted-foreground">No file bound</span>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function formatBytes(n: number): string {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  if (n < 1024 * 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MB`;
+  return `${(n / 1024 / 1024 / 1024).toFixed(2)} GB`;
 }
