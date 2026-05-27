@@ -10,6 +10,13 @@ import { Badge } from "@/components/ui/badge";
 import { DriveAuthProvider } from "@/adapters/DriveAuthProvider";
 import { showDrivePicker } from "@/adapters/DrivePicker";
 import { DEMO_REFERENCE, DEMO_ROUNDS, loadDemoFastq } from "@/tools/cdna-display/demo";
+import {
+  LIMITS,
+  peekFastq,
+  sanitizeProjectName,
+  validateFastqFileSync,
+  validateProjectName,
+} from "@/lib/validation";
 
 const CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID as string | undefined;
 const API_KEY = import.meta.env.VITE_GOOGLE_API_KEY as string | undefined;
@@ -33,15 +40,49 @@ export function SourcesStep() {
   } = useRunStore();
   const totalFiles = localFiles.length + driveFiles.length;
   const perRound = pipelineMode === "per-round";
+  // Controlled Tabs: needs to be controlled (not `defaultValue`) so we can
+  // auto-switch to "drive" after an OAuth return — otherwise DriveTabContent
+  // doesn't mount and the pending picker action sits idle.
+  const [activeSourceTab, setActiveSourceTab] = useState<"local" | "drive">(() => {
+    if (typeof sessionStorage !== "undefined") {
+      // If we came back from OAuth with a pending picker action, surface
+      // the Drive tab immediately so the resume logic runs on first paint.
+      const pending = sessionStorage.getItem("cdna_drive_pending_action");
+      if (pending === "open_picker") return "drive";
+    }
+    return "local";
+  });
   const inputRef = useRef<HTMLInputElement>(null);
   const [dragActive, setDragActive] = useState(false);
   const [demoBusy, setDemoBusy] = useState(false);
   const [demoErr, setDemoErr] = useState<string | null>(null);
 
-  const onFiles = (list: FileList | null) => {
+  const [fileWarnings, setFileWarnings] = useState<string[]>([]);
+
+  const onFiles = async (list: FileList | null) => {
     if (!list) return;
-    const arr = Array.from(list).filter((f) => /\.(fastq|fq)$/i.test(f.name));
-    setLocalFiles([...localFiles, ...arr]);
+    const warnings: string[] = [];
+    const accepted: File[] = [];
+    for (const f of Array.from(list)) {
+      const sync = validateFastqFileSync(f);
+      if (!sync.ok) {
+        warnings.push(`${f.name}: ${sync.reason}`);
+        continue;
+      }
+      const peek = await peekFastq(f);
+      if (!peek.ok && peek.level === "error") {
+        warnings.push(`${f.name}: ${peek.reason}`);
+        continue;
+      }
+      if (peek.level === "warning") {
+        warnings.push(`${f.name}: ${peek.reason} (loaded anyway)`);
+      }
+      accepted.push(f);
+    }
+    setFileWarnings(warnings);
+    if (accepted.length > 0) {
+      setLocalFiles([...localFiles, ...accepted]);
+    }
   };
 
   const loadDemo = async () => {
@@ -84,9 +125,21 @@ export function SourcesStep() {
           <Input
             id="project"
             value={projectName}
-            onChange={(e) => setProjectName(e.target.value)}
+            onChange={(e) => setProjectName(sanitizeProjectName(e.target.value))}
+            maxLength={LIMITS.PROJECT_NAME_MAX}
             className="mt-1.5 max-w-md"
+            placeholder="e.g. cyclic_peptide_R1_2026"
           />
+          {(() => {
+            const err = validateProjectName(projectName);
+            if (err) return <p className="mt-1.5 text-xs text-destructive">{err}</p>;
+            return (
+              <p className="mt-1.5 text-xs text-muted-foreground">
+                Letters, digits, dot, dash, underscore, and space. Used in
+                download filenames.
+              </p>
+            );
+          })()}
         </CardContent>
       </Card>
 
@@ -143,16 +196,30 @@ export function SourcesStep() {
       </Card>
 
       {perRound && (
-        <Card className="border-primary/30 bg-primary/5">
-          <CardHeader>
-            <CardTitle className="text-base">FASTQ sources — configured per round</CardTitle>
-            <CardDescription>
-              In per-round mode, each round picks its own FASTQ in the
-              <span className="font-medium"> Configure</span> step. There's
-              nothing to do on this page — continue when you're ready.
-            </CardDescription>
-          </CardHeader>
-        </Card>
+        <>
+          <Card className="border-primary/30 bg-primary/5">
+            <CardHeader>
+              <CardTitle className="text-base">FASTQ sources — configured per round</CardTitle>
+              <CardDescription>
+                In per-round mode, each round picks its own FASTQ in the
+                <span className="font-medium"> Configure</span> step. If any
+                of those files live in Google Drive, sign in here first so
+                the next step's picker works without a redirect (otherwise
+                you'd lose the primer config you typed there).
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <DriveTabContent
+                setDriveFiles={() => {
+                  /* per-round mode doesn't accumulate global drive files; the
+                     sign-in is the only thing we want here */
+                }}
+                driveFileCount={0}
+                signInOnly
+              />
+            </CardContent>
+          </Card>
+        </>
       )}
 
       {!perRound && (
@@ -164,7 +231,10 @@ export function SourcesStep() {
           </CardDescription>
         </CardHeader>
         <CardContent>
-          <Tabs defaultValue="local">
+          <Tabs
+            value={activeSourceTab}
+            onValueChange={(v) => setActiveSourceTab(v as "local" | "drive")}
+          >
             <TabsList>
               <TabsTrigger value="local">
                 <FileText className="mr-1.5 h-4 w-4" /> Local files
@@ -208,9 +278,24 @@ export function SourcesStep() {
                   multiple
                   accept=".fastq,.fq"
                   className="hidden"
-                  onChange={(e) => onFiles(e.target.files)}
+                  onChange={(e) => {
+                    void onFiles(e.target.files);
+                    if (inputRef.current) inputRef.current.value = "";
+                  }}
                 />
               </div>
+              {fileWarnings.length > 0 && (
+                <div className="mt-3 rounded-md border border-warning/30 bg-warning/5 p-3 text-xs">
+                  <p className="font-medium text-warning">
+                    {fileWarnings.length} file{fileWarnings.length === 1 ? "" : "s"} had issues:
+                  </p>
+                  <ul className="mt-1 list-inside list-disc space-y-0.5 text-muted-foreground">
+                    {fileWarnings.map((w, i) => (
+                      <li key={i}>{w}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
             </TabsContent>
 
             <TabsContent value="drive">
@@ -272,9 +357,14 @@ export function SourcesStep() {
 function DriveTabContent({
   setDriveFiles,
   driveFileCount,
+  signInOnly = false,
 }: {
   setDriveFiles: (f: import("@/worker/types").DriveFileRef[]) => void;
   driveFileCount: number;
+  /** When true, omit the picker affordance and only surface the sign-in
+   *  button. Used by the per-round mode Sources card to pre-authenticate
+   *  the user without forcing them to pick anything yet. */
+  signInOnly?: boolean;
 }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -385,10 +475,12 @@ VITE_GOOGLE_API_KEY=…`}
 
   // After the OAuth redirect returns, our DriveAuthProvider constructor has
   // already parsed the access token from the URL fragment. If we'd queued
-  // "open_picker" before the redirect, resume that action now.
+  // "open_picker" before the redirect, resume that action now. In
+  // signInOnly mode we never set the pending action, so this loop is a
+  // no-op for the per-round path — auth state is what matters there.
   useEffect(() => {
     const auth = authRef.current;
-    if (!auth || !API_KEY) return;
+    if (!auth || !API_KEY || signInOnly) return;
     const pending = DriveAuthProvider.consumePendingAction();
     if (pending === "open_picker" && auth.isSignedIn()) {
       console.log("[drive] resuming pending action 'open_picker' after OAuth return");
@@ -400,16 +492,45 @@ VITE_GOOGLE_API_KEY=…`}
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  const signedIn = authRef.current?.isSignedIn() ?? false;
+
   return (
-    <div className="mt-4 flex flex-col gap-3">
-      <p className="text-sm text-muted-foreground">
-        Stream files directly from your Google Drive. Files never leave your browser.
-      </p>
-      <div>
-        <Button onClick={onPick} disabled={busy} variant="outline">
-          <Cloud className="mr-1.5 h-4 w-4" />
-          {driveFileCount > 0 ? `Reselect Drive files (${driveFileCount})` : "Sign in & pick from Drive…"}
-        </Button>
+    <div className={signInOnly ? "flex flex-col gap-3" : "mt-4 flex flex-col gap-3"}>
+      {!signInOnly && (
+        <p className="text-sm text-muted-foreground">
+          Stream files directly from your Google Drive. Files never leave your browser.
+        </p>
+      )}
+      <div className="flex flex-wrap items-center gap-2">
+        {signInOnly ? (
+          <Button
+            onClick={async () => {
+              const auth = authRef.current;
+              if (!auth) return;
+              if (auth.isSignedIn()) return; // already signed in
+              DriveAuthProvider.setPendingAction(null);
+              setBusy(true);
+              void auth.getToken(); // navigates away
+            }}
+            disabled={busy || signedIn}
+            variant={signedIn ? "outline" : "default"}
+          >
+            <Cloud className="mr-1.5 h-4 w-4" />
+            {signedIn ? "Signed in to Drive" : "Sign in to Google Drive"}
+          </Button>
+        ) : (
+          <Button onClick={onPick} disabled={busy} variant="outline">
+            <Cloud className="mr-1.5 h-4 w-4" />
+            {driveFileCount > 0
+              ? `Reselect Drive files (${driveFileCount})`
+              : "Sign in & pick from Drive…"}
+          </Button>
+        )}
+        {signInOnly && signedIn && (
+          <span className="text-xs text-muted-foreground">
+            Drive picker is now available on each round in the Configure step.
+          </span>
+        )}
       </div>
       {error && <p className="text-sm text-destructive">{error}</p>}
     </div>

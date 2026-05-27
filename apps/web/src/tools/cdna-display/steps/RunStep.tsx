@@ -29,9 +29,13 @@ export function RunStep() {
   // not the (unused) localFiles array. Compute a unified view for the UI.
   const uiSources = useMemo(() => {
     if (pipelineMode === "per-round") {
-      return rounds
+      const local = rounds
         .filter((r) => r.file != null)
-        .map((r) => ({ name: r.file!.name, totalBytes: r.file!.size }));
+        .map((r) => ({ name: r.file!.name, totalBytes: r.file!.size as number | null }));
+      const drive = rounds
+        .filter((r) => r.driveRef != null)
+        .map((r) => ({ name: r.driveRef!.name, totalBytes: r.driveRef!.sizeBytes }));
+      return [...local, ...drive];
     }
     return [
       ...localFiles.map((f) => ({ name: f.name, totalBytes: f.size as number | null })),
@@ -57,28 +61,47 @@ export function RunStep() {
       cdsEnd: r.cdsEnd!,
     }));
 
-    // Two ways the job assembles `localFiles` + `sourceRoundIndices`:
+    // Job assembly differs between the two modes:
     //
     //  - multiplexed: read directly from the store's localFiles + driveFiles.
     //    sourceRoundIndices is omitted; pipeline.ts demultiplexes by barcode.
     //
-    //  - per-round: pull one File per round from `rounds[i].file`, mirroring
-    //    the order so sourceRoundIndices[i] === i. The store's localFiles is
-    //    ignored in this mode (the Sources step explicitly tells the user so).
+    //  - per-round: each round has either a local File or a Drive ref. We
+    //    split into the worker's [localFiles, driveFiles] flat arrays and
+    //    record which round each entry belongs to in sourceRoundIndices.
+    //    Layout: all local sources first (in round order), then all drive
+    //    sources (in round order). sourceRoundIndices is parallel to that
+    //    combined array.
     let jobLocalFiles: File[];
     let jobDriveFiles = s.driveFiles;
     let sourceRoundIndices: number[] | undefined;
     if (s.pipelineMode === "per-round") {
-      const missing = s.rounds.filter((r) => r.file == null).map((r) => r.name);
+      const missing = s.rounds
+        .filter((r) => r.file == null && r.driveRef == null)
+        .map((r) => r.name);
       if (missing.length > 0) {
         const msg = `Per-round mode: these rounds have no FASTQ bound: ${missing.join(", ")}`;
         s.appendLog({ text: msg, tag: "error" });
         s.failRun(msg);
         return;
       }
-      jobLocalFiles = s.rounds.map((r) => r.file!);
-      jobDriveFiles = []; // Drive isn't part of per-round mode yet.
-      sourceRoundIndices = s.rounds.map((_, i) => i);
+      const localFilesArr: File[] = [];
+      const localIndicesRound: number[] = [];
+      const driveFilesArr: typeof s.driveFiles = [];
+      const driveIndicesRound: number[] = [];
+      for (let i = 0; i < s.rounds.length; i++) {
+        const r = s.rounds[i]!;
+        if (r.file) {
+          localFilesArr.push(r.file);
+          localIndicesRound.push(i);
+        } else if (r.driveRef) {
+          driveFilesArr.push(r.driveRef);
+          driveIndicesRound.push(i);
+        }
+      }
+      jobLocalFiles = localFilesArr;
+      jobDriveFiles = driveFilesArr;
+      sourceRoundIndices = [...localIndicesRound, ...driveIndicesRound];
     } else {
       jobLocalFiles = s.localFiles;
     }
@@ -91,7 +114,24 @@ export function RunStep() {
       tag: "info",
     });
     try {
-      const driveToken = (window as unknown as { __drive_token?: string }).__drive_token;
+      // Drive bearer token: prefer the one stashed by the Sources flow
+      // (multiplexed mode). For per-round Drive picks we read from the
+      // DriveAuthProvider's sessionStorage cache so a Configure-time pick
+      // still has a valid token to ship to the worker.
+      let driveToken = (window as unknown as { __drive_token?: string }).__drive_token;
+      if (!driveToken && jobDriveFiles.length > 0) {
+        try {
+          const raw = sessionStorage.getItem("cdna_drive_token");
+          if (raw) {
+            const parsed = JSON.parse(raw) as { token?: string; expiresAt?: number };
+            if (parsed.token && (parsed.expiresAt ?? 0) > Date.now()) {
+              driveToken = parsed.token;
+            }
+          }
+        } catch {
+          /* fall through; the worker will surface the missing-token error */
+        }
+      }
       const outcome = await runInWorker(
         {
           localFiles: jobLocalFiles,
@@ -246,7 +286,10 @@ function OverallProgress() {
   const totalKnownBytes = useMemo(() => {
     let t = 0;
     if (pipelineMode === "per-round") {
-      for (const r of rounds) if (r.file) t += r.file.size;
+      for (const r of rounds) {
+        if (r.file) t += r.file.size;
+        else if (r.driveRef?.sizeBytes != null) t += r.driveRef.sizeBytes;
+      }
     } else {
       for (const f of localFiles) t += f.size;
       for (const d of driveFiles) if (d.sizeBytes != null) t += d.sizeBytes;

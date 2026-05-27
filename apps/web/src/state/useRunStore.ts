@@ -6,6 +6,7 @@
 
 import { create } from "zustand";
 import type { DriveFileRef, PipelineOutcome, PipelineProgressMsg } from "../worker/types";
+export type { DriveFileRef };
 
 // Steps are referenced by string id so the store stays tool-agnostic. The
 // active tool (currently tools/cdna-display) decides which ids are valid
@@ -44,11 +45,13 @@ export interface RoundForm {
   rvPrimer: string;
   cdsStart: number | null;
   cdsEnd: number | null;
-  /** Per-round FASTQ. Only used when pipelineMode === "per-round" — each
-   *  round owns its source file in that mode, so the binding can never
-   *  drift. In multiplexed mode this field is unused (sources come from
-   *  localFiles + driveFiles instead). */
+  /** Per-round FASTQ from the local filesystem. Only used when
+   *  pipelineMode === "per-round". Mutually exclusive with `driveRef`:
+   *  setting one clears the other. */
   file: File | null;
+  /** Per-round FASTQ from Google Drive. Only used when
+   *  pipelineMode === "per-round". Mutually exclusive with `file`. */
+  driveRef: DriveFileRef | null;
 }
 
 // PreviewResult + PreviewStatus live in the cDNA tool module; re-export so
@@ -135,6 +138,7 @@ function defaultRound(idx: number): RoundForm {
     cdsStart: null,
     cdsEnd: null,
     file: null,
+    driveRef: null,
   };
 }
 
