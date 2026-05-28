@@ -25,6 +25,39 @@ export function RunStep() {
   const driveFiles = useRunStore((s) => s.driveFiles);
   const rounds = useRunStore((s) => s.rounds);
   const pipelineMode = useRunStore((s) => s.pipelineMode);
+  // Duplicate-source detector. Flags any FASTQ that appears more than once
+  // across the run — would silently double-count its reads otherwise. Local
+  // files keyed by (name, size, lastModified); Drive files keyed by id.
+  const duplicateGroups = useMemo(() => {
+    const keyToLabels = new Map<string, string[]>();
+    const addSource = (key: string, label: string) => {
+      const arr = keyToLabels.get(key) ?? [];
+      arr.push(label);
+      keyToLabels.set(key, arr);
+    };
+    if (pipelineMode === "per-round") {
+      for (const r of rounds) {
+        if (r.file) {
+          addSource(`local:${r.file.name}:${r.file.size}:${r.file.lastModified}`, `${r.name} ← ${r.file.name}`);
+        } else if (r.driveRef) {
+          addSource(`drive:${r.driveRef.id}`, `${r.name} ← ${r.driveRef.name}`);
+        }
+      }
+    } else {
+      for (const f of localFiles) {
+        addSource(`local:${f.name}:${f.size}:${f.lastModified}`, f.name);
+      }
+      for (const d of driveFiles) {
+        addSource(`drive:${d.id}`, d.name);
+      }
+    }
+    const dupes: string[][] = [];
+    for (const labels of keyToLabels.values()) {
+      if (labels.length > 1) dupes.push(labels);
+    }
+    return dupes;
+  }, [pipelineMode, rounds, localFiles, driveFiles]);
+
   // In per-round mode the user-facing source list comes from rounds[i].file,
   // not the (unused) localFiles array. Compute a unified view for the UI.
   const uiSources = useMemo(() => {
@@ -142,6 +175,10 @@ export function RunStep() {
             adaptive: s.adaptive,
             filterStop: s.filterStop,
             minMeanPhred: 20.0,
+            // CDS-region Q check uses the same threshold by default; this is
+            // the B2 fix from the QC audit (catches reads with high overall
+            // quality but a noisy CDS region toward the 3' end).
+            minMeanPhredCds: 20.0,
           },
           useWasm: s.useWasm,
           mode: s.pipelineMode,
@@ -178,6 +215,26 @@ export function RunStep() {
 
   return (
     <div className="mx-auto max-w-5xl space-y-6">
+      {duplicateGroups.length > 0 && status === "idle" && (
+        <div className="rounded-md border border-warning/40 bg-warning/5 p-4 text-sm">
+          <p className="font-medium text-warning">
+            Duplicate FASTQ detected — reads would be counted twice
+          </p>
+          <p className="mt-1 text-xs text-muted-foreground">
+            The same file is referenced more than once in this run. The
+            pipeline will ingest each copy independently, so any peptide it
+            contains will be over-represented in the matrix. Remove the
+            extra references (or run anyway if this is intentional).
+          </p>
+          <ul className="mt-2 list-inside list-disc space-y-0.5 text-xs">
+            {duplicateGroups.map((labels, i) => (
+              <li key={i} className="font-mono">
+                {labels.join("  ↔  ")}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
       <Card>
         <CardHeader className="flex flex-row items-center justify-between space-y-0">
           <div>

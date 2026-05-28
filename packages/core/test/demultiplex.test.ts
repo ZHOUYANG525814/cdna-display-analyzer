@@ -12,8 +12,23 @@ import { bytesToAscii } from "../src/fastq.js";
 const ENC = new TextEncoder();
 const bytesOf = (s: string) => ENC.encode(s);
 
-const STRICT: DemultiplexSettings = { adaptive: true, filterStop: true, minMeanPhred: 20.0 };
-const NON_ADAPTIVE: DemultiplexSettings = { adaptive: false, filterStop: true, minMeanPhred: 20.0 };
+const STRICT: DemultiplexSettings = {
+  adaptive: true,
+  filterStop: true,
+  minMeanPhred: 20.0,
+  minMeanPhredCds: 20.0,
+};
+const NON_ADAPTIVE: DemultiplexSettings = {
+  adaptive: false,
+  filterStop: true,
+  minMeanPhred: 20.0,
+  minMeanPhredCds: 20.0,
+};
+
+// All-Q40 qual line of the requested length. 'I' = ASCII 73 = Phred+33 of 40.
+// These tests aren't about Q-score filtering, so we hand the engine all-Q40
+// qual so the new B2 CDS-region check never fires here.
+const HI_Q = (n: number) => new Uint8Array(n).fill(0x49);
 
 // A reusable round template: 5 bp barcode + 10 bp anchor. CDS = 9 bp (3 codons).
 function mkRound(name: string, barcode: string, cdsStart = 1, cdsEnd = 9): RoundConfigInput {
@@ -73,7 +88,7 @@ describe("DemultiplexEngine.processRead", () => {
     const e = new DemultiplexEngine(rounds, STRICT);
     // 5 bp prefix + 5 bp barcode + 10 bp anchor + 9 bp CDS + 5 bp tail
     const seq = bytesOf("NNNNN" + "GGGGG" + "AAAAACCCCC" + "ATGGCCAAA" + "TTTTT");
-    expect(e.processRead(seq)).toBe("assigned");
+    expect(e.processRead(seq, HI_Q(seq.length))).toBe("assigned");
 
     const stats = e.stats.get("R0")!;
     expect(stats.total_assigned).toBe(1);
@@ -91,7 +106,7 @@ describe("DemultiplexEngine.processRead", () => {
     const e = new DemultiplexEngine(rounds, STRICT);
     // CDS = ATG TAA GCC (in-frame stop in codon 2)
     const seq = bytesOf("GGGGG" + "AAAAACCCCC" + "ATGTAAGCC" + "TTTT");
-    expect(e.processRead(seq)).toBe("assigned"); // assigned to round, but charged to stop bucket
+    expect(e.processRead(seq, HI_Q(seq.length))).toBe("assigned"); // assigned to round, but charged to stop bucket
     expect(e.stats.get("R0")!.discard_stop_codon).toBe(1);
     expect(e.stats.get("R0")!.passed_qc).toBe(0);
     expect(e.dnaCounters.get("R0")!.size).toBe(0);
@@ -102,7 +117,7 @@ describe("DemultiplexEngine.processRead", () => {
     const rounds = preprocessRounds([mkRound("R0", "GGGGG", 1, 8)]);
     const e = new DemultiplexEngine(rounds, STRICT);
     const seq = bytesOf("GGGGG" + "AAAAACCCCC" + "ATGGCCAA" + "TTTT");
-    expect(e.processRead(seq)).toBe("assigned");
+    expect(e.processRead(seq, HI_Q(seq.length))).toBe("assigned");
     expect(e.stats.get("R0")!.discard_length_indel).toBe(1);
   });
 
@@ -111,7 +126,7 @@ describe("DemultiplexEngine.processRead", () => {
     const e = new DemultiplexEngine(rounds, STRICT);
     // Read ends right after the anchor — no CDS at all.
     const seq = bytesOf("GGGGG" + "AAAAACCCCC");
-    expect(e.processRead(seq)).toBe("assigned");
+    expect(e.processRead(seq, HI_Q(seq.length))).toBe("assigned");
     expect(e.stats.get("R0")!.discard_truncated).toBe(1);
   });
 
@@ -119,7 +134,7 @@ describe("DemultiplexEngine.processRead", () => {
     const rounds = preprocessRounds([mkRound("R0", "GGGGG")]);
     const e = new DemultiplexEngine(rounds, STRICT);
     const seq = bytesOf("GTGTGTGTGTGTGTGTGT");
-    expect(e.processRead(seq)).toBe("no_anchor");
+    expect(e.processRead(seq, HI_Q(seq.length))).toBe("no_anchor");
   });
 
   it("returns 'barcode_mismatch' when score exceeds MAX_BARCODE_ERROR", () => {
@@ -127,7 +142,7 @@ describe("DemultiplexEngine.processRead", () => {
     const e = new DemultiplexEngine(rounds, STRICT);
     // Anchor present, but barcode is all wrong (5 mismatches → score 5 > 1.0)
     const seq = bytesOf("ATATA" + "AAAAACCCCC" + "ATGGCCAAA");
-    expect(e.processRead(seq)).toBe("barcode_mismatch");
+    expect(e.processRead(seq, HI_Q(seq.length))).toBe("barcode_mismatch");
   });
 
   it("returns 'ambiguous' when victory margin < 1.0", () => {
@@ -139,7 +154,7 @@ describe("DemultiplexEngine.processRead", () => {
     ]);
     const e = new DemultiplexEngine(rounds, STRICT);
     const seq = bytesOf("GGGNG" + "AAAAACCCCC" + "ATGGCCAAA");
-    expect(e.processRead(seq)).toBe("ambiguous");
+    expect(e.processRead(seq, HI_Q(seq.length))).toBe("ambiguous");
   });
 
   it("preserves stable order on tied scores (first-defined round wins)", () => {
@@ -152,7 +167,7 @@ describe("DemultiplexEngine.processRead", () => {
     ]);
     const e = new DemultiplexEngine(rounds, STRICT);
     const seq = bytesOf("GGGGG" + "AAAAACCCCC" + "ATGGCCAAA");
-    expect(e.processRead(seq)).toBe("ambiguous");
+    expect(e.processRead(seq, HI_Q(seq.length))).toBe("ambiguous");
   });
 
   it("adaptive=false drops a read whose Rv anchor lands inside the CDS span", () => {
@@ -163,7 +178,7 @@ describe("DemultiplexEngine.processRead", () => {
     const rounds = preprocessRounds([mkRound("R0", "GGGGG", 1, 15)]);
     const e = new DemultiplexEngine(rounds, NON_ADAPTIVE);
     const seq = bytesOf("GGGGG" + "AAAAACCCCC" + "ATGGCCAAATTT" + "CCCCCAAAAA" + "TTTT");
-    expect(e.processRead(seq)).toBe("assigned");
+    expect(e.processRead(seq, HI_Q(seq.length))).toBe("assigned");
     expect(e.stats.get("R0")!.discard_length_indel).toBe(1);
     expect(e.stats.get("R0")!.discard_truncated).toBe(0);
   });
@@ -175,7 +190,7 @@ describe("DemultiplexEngine.processRead", () => {
     const rounds = preprocessRounds([mkRound("R0", "GGGGG", 1, 15)]);
     const e = new DemultiplexEngine(rounds, STRICT);
     const seq = bytesOf("GGGGG" + "AAAAACCCCC" + "ATGGCCAAATTT" + "CCCCCAAAAA" + "TTTT");
-    expect(e.processRead(seq)).toBe("assigned");
+    expect(e.processRead(seq, HI_Q(seq.length))).toBe("assigned");
     expect(e.stats.get("R0")!.discard_length_indel).toBe(0);
     expect(e.stats.get("R0")!.passed_qc).toBe(1);
     expect(e.dnaCounters.get("R0")!.get("ATGGCCAAATTTCCC")).toBe(1);
@@ -185,9 +200,9 @@ describe("DemultiplexEngine.processRead", () => {
     const rounds = preprocessRounds([mkRound("R0", "GGGGG", 1, 9)]);
     const e = new DemultiplexEngine(rounds, STRICT);
     const seq = bytesOf("GGGGG" + "AAAAACCCCC" + "ATGGCCAAA" + "TTTT");
-    e.processRead(seq);
-    e.processRead(seq);
-    e.processRead(seq);
+    e.processRead(seq, HI_Q(seq.length));
+    e.processRead(seq, HI_Q(seq.length));
+    e.processRead(seq, HI_Q(seq.length));
     expect(e.dnaCounters.get("R0")!.get("ATGGCCAAA")).toBe(3);
     expect(e.stats.get("R0")!.passed_qc).toBe(3);
   });

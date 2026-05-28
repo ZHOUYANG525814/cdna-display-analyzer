@@ -118,6 +118,7 @@ export function ResultsStep() {
                   <th className="pb-2 pr-4 font-medium">Round</th>
                   <th className="pb-2 pr-4 font-medium text-right">Assigned</th>
                   <th className="pb-2 pr-4 font-medium text-right">Truncated</th>
+                  <th className="pb-2 pr-4 font-medium text-right">Low-Q CDS</th>
                   <th className="pb-2 pr-4 font-medium text-right">Stop</th>
                   <th className="pb-2 pr-4 font-medium text-right">Passed</th>
                   <th className="pb-2 font-medium">Yield</th>
@@ -132,6 +133,12 @@ export function ResultsStep() {
                       <td className="py-2 pr-4 font-mono text-xs">{r}</td>
                       <td className="py-2 pr-4 text-right font-mono text-xs">{s.total_assigned.toLocaleString()}</td>
                       <td className="py-2 pr-4 text-right font-mono text-xs">{s.discard_truncated.toLocaleString()}</td>
+                      <td
+                        className="py-2 pr-4 text-right font-mono text-xs"
+                        title="Read passed the global mean-Phred filter but the CDS region itself was too noisy (B2 fix)."
+                      >
+                        {(s.discard_low_quality_cds ?? 0).toLocaleString()}
+                      </td>
                       <td className="py-2 pr-4 text-right font-mono text-xs">{s.discard_stop_codon.toLocaleString()}</td>
                       <td className="py-2 pr-4 text-right font-mono text-xs text-success">{s.passed_qc.toLocaleString()}</td>
                       <td className="py-2 w-40">

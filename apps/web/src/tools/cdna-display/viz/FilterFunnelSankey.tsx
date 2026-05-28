@@ -36,7 +36,7 @@ function classifyNode(name: string): string {
   if (name === "Total reads") return COLOR_TOTAL;
   if (name.startsWith("Round_")) return COLOR_ROUND;
   if (name.startsWith("Passed QC ")) return COLOR_PASSED;
-  if (name.startsWith("Truncated ") || name.startsWith("Stop "))
+  if (name.startsWith("Truncated ") || name.startsWith("Stop ") || name.startsWith("Low-Q CDS "))
     return COLOR_DISCARD;
   return COLOR_UNASSIGNED;
 }
@@ -121,6 +121,7 @@ function buildSankeyData(outcome: PipelineOutcome): SankeyData {
     addLink(total, rNode, s.total_assigned);
 
     addLink(rNode, addNode(`Truncated · ${roundName}`), s.discard_truncated);
+    addLink(rNode, addNode(`Low-Q CDS · ${roundName}`), s.discard_low_quality_cds ?? 0);
     addLink(rNode, addNode(`Stop · ${roundName}`), s.discard_stop_codon);
     addLink(rNode, addNode(`Passed QC · ${roundName}`), s.passed_qc);
   }

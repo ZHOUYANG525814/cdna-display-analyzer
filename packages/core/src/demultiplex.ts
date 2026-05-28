@@ -31,8 +31,15 @@ export interface PreprocessedRound {
 export interface DemultiplexSettings {
   adaptive: boolean;
   filterStop: boolean;
-  /** Mean Phred threshold; reads with mean < this are dropped before scoring. */
+  /** Mean Phred threshold; reads with whole-read mean < this are dropped
+   *  before barcode scoring (cheap pre-filter). */
   minMeanPhred: number;
+  /** Stricter post-anchor check: after the CDS slice is located, the mean
+   *  Phred over JUST those bases must also be ≥ this. Defaults to the same
+   *  value as `minMeanPhred`. Catches reads with high overall quality but
+   *  a noisy CDS region — common when Illumina quality decays toward the
+   *  read 3' end and the CDS happens to live near it. */
+  minMeanPhredCds: number;
 }
 
 export type UnassignedReason = "low_quality" | "no_anchor" | "ambiguous" | "barcode_mismatch";
@@ -43,6 +50,13 @@ export interface RoundStats {
   discard_truncated: number;
   discard_length_indel: number;
   discard_stop_codon: number;
+  /** Reads whose CDS-slice mean Phred fell below the threshold. The pre-
+   *  engine `low_quality` filter catches reads with globally-bad qual; this
+   *  catches the more insidious case where a read is OK overall but the CDS
+   *  region (typically toward the read's 3' end, where Illumina qual drops)
+   *  is too noisy to trust the called variant. Adds ~10 ns per assigned read
+   *  in the inner loop. */
+  discard_low_quality_cds: number;
   passed_qc: number;
 }
 
@@ -92,6 +106,8 @@ export function reverseComplementBytesToBytes(input: Uint8Array): Uint8Array {
 // the same buffer trimmed to the read length. The pipeline holds a scratch
 // sized to the largest read seen so far and reuses it across every retry —
 // this dodges the Uint8Array allocation on what's typically 30–50% of reads.
+// Lowercase a/c/g/t/n are uppercased first by the pipeline's upstream
+// uppercaseInto, so this function only needs to know about ACGTN.
 export function rcInto(input: Uint8Array, scratch: Uint8Array): Uint8Array {
   const n = input.length;
   for (let i = 0; i < n; i++) {
@@ -104,6 +120,38 @@ export function rcInto(input: Uint8Array, scratch: Uint8Array): Uint8Array {
                : c;
   }
   return scratch.subarray(0, n);
+}
+
+/** Uppercase ASCII letters in-place into a scratch buffer. Lowercase a-z
+ *  (0x61-0x7A) → A-Z (0x41-0x5A); everything else passes through. Used as
+ *  the B5 fix: some upstream tools emit soft-masked lowercase bases that
+ *  would silently fail the engine's exact-byte anchor scan. */
+export function uppercaseInto(input: Uint8Array, scratch: Uint8Array): Uint8Array {
+  const n = input.length;
+  for (let i = 0; i < n; i++) {
+    const c = input[i]!;
+    scratch[i] = c >= 0x61 && c <= 0x7a ? c - 0x20 : c;
+  }
+  return scratch.subarray(0, n);
+}
+
+/** Reverse a byte array into a scratch buffer. Used for qual on the RC
+ *  retry path: when seq is reverse-complemented, qual must be reversed
+ *  (without complement — qual scores are platform-independent of base) so
+ *  the per-position Q-score in the CDS region lines up with the per-position
+ *  bases the engine scores. */
+export function reverseInto(input: Uint8Array, scratch: Uint8Array): Uint8Array {
+  const n = input.length;
+  for (let i = 0; i < n; i++) scratch[i] = input[n - 1 - i]!;
+  return scratch.subarray(0, n);
+}
+
+/** Verbatim copy into a scratch buffer. Small but worth its name: keeps the
+ *  pipeline branch-free between forward + RC paths where the latter needs
+ *  a separate qual buffer (reversed) but the former is identity. */
+export function copyInto(input: Uint8Array, scratch: Uint8Array): Uint8Array {
+  scratch.set(input);
+  return scratch.subarray(0, input.length);
 }
 
 export function preprocessRounds(inputs: ReadonlyArray<RoundConfigInput>): PreprocessedRound[] {
@@ -165,6 +213,7 @@ export class DemultiplexEngine {
         discard_truncated: 0,
         discard_length_indel: 0,
         discard_stop_codon: 0,
+        discard_low_quality_cds: 0,
         passed_qc: 0,
       });
       this.dnaCounters.set(r.name, new Map());
@@ -180,7 +229,7 @@ export class DemultiplexEngine {
   // outcome (including discards charged to a round-level bucket); only the
   // unassigned cases ("no_anchor" / "barcode_mismatch" / "ambiguous") are
   // bubbled up so the caller can retry on the reverse-complement strand.
-  processRead(seq: Uint8Array): ProcessResult {
+  processRead(seq: Uint8Array, qual: Uint8Array): ProcessResult {
     let bestScore: number;
     let bestRoundIdx: number;
     let bestFwEndIdx: number;
@@ -277,13 +326,30 @@ export class DemultiplexEngine {
       return "assigned";
     }
 
-    // 7. Stop codon (when filter is on).
+    // 7. CDS-region Q-score check. The pre-engine global mean-Phred filter
+    //    caught reads with universally bad qual; this catches the trickier
+    //    case where the whole-read mean was OK but the CDS bases themselves
+    //    are too noisy to trust. Phred+33 mean over the slice — no allocation.
+    {
+      const qLen = cdsEndAbs - cdsStartAbs;
+      if (qLen > 0 && cdsEndAbs <= qual.length) {
+        let qSum = 0;
+        for (let k = cdsStartAbs; k < cdsEndAbs; k++) qSum += qual[k]! - 33;
+        const cdsMeanQ = qSum / qLen;
+        if (cdsMeanQ < this.settings.minMeanPhredCds) {
+          roundStats.discard_low_quality_cds++;
+          return "assigned";
+        }
+      }
+    }
+
+    // 8. Stop codon (when filter is on).
     if (this.settings.filterStop && !hasNoStopCodon(cdsBytes)) {
       roundStats.discard_stop_codon++;
       return "assigned";
     }
 
-    // 8. Commit. decodeCds produces a fresh atomized string with no parent
+    // 9. Commit. decodeCds produces a fresh atomized string with no parent
     //    reference, safe to use as a long-lived Map key.
     roundStats.passed_qc++;
     const cdsStr = decodeCds(cdsBytes);
@@ -314,7 +380,7 @@ export class DemultiplexEngine {
    *  identical to processRead — we just bypass the round-comparison step.
    *  Yields byte-identical numerical results for single-round configurations
    *  by construction. */
-  processReadForRound(seq: Uint8Array, roundIdx: number): ProcessResult {
+  processReadForRound(seq: Uint8Array, qual: Uint8Array, roundIdx: number): ProcessResult {
     const cfg = this.rounds[roundIdx];
     if (!cfg) return "no_anchor";
 
@@ -368,6 +434,20 @@ export class DemultiplexEngine {
     if (cdsLen % 3 !== 0) {
       roundStats.discard_length_indel++;
       return "assigned";
+    }
+
+    // CDS-region Q-score check (same logic as processRead — see B2 fix).
+    {
+      const qLen = cdsEndAbs - cdsStartAbs;
+      if (qLen > 0 && cdsEndAbs <= qual.length) {
+        let qSum = 0;
+        for (let k = cdsStartAbs; k < cdsEndAbs; k++) qSum += qual[k]! - 33;
+        const cdsMeanQ = qSum / qLen;
+        if (cdsMeanQ < this.settings.minMeanPhredCds) {
+          roundStats.discard_low_quality_cds++;
+          return "assigned";
+        }
+      }
     }
 
     if (this.settings.filterStop && !hasNoStopCodon(cdsBytes)) {

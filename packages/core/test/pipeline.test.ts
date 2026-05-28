@@ -32,7 +32,12 @@ function makeSource(name: string, content: string, chunkSize: number = 64): IFas
   };
 }
 
-const STRICT: DemultiplexSettings = { adaptive: true, filterStop: true, minMeanPhred: 20.0 };
+const STRICT: DemultiplexSettings = {
+  adaptive: true,
+  filterStop: true,
+  minMeanPhred: 20.0,
+  minMeanPhredCds: 20.0,
+};
 
 const ROUND: RoundConfigInput = {
   name: "R0",

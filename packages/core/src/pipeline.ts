@@ -7,8 +7,11 @@
 import type { IFastqSource } from "@cdna/types";
 import {
   DemultiplexEngine,
+  copyInto,
   preprocessRounds,
   rcInto,
+  reverseInto,
+  uppercaseInto,
   type DemultiplexSettings,
   type RoundConfigInput,
   type RoundStats,
@@ -96,9 +99,19 @@ export async function runPipeline(req: PipelineRequest): Promise<PipelineResult>
     let bytesProcessed = 0;
     let recordsProcessed = 0;
     let lastReportedBytes = 0;
-    // Scratch buffer reused across every RC retry on this source. Grows on
-    // demand if a read is longer than any previously seen.
+    // Three scratch buffers, reused across every read on this source:
+    //   - upScratch / upQualScratch: forward-strand uppercase-normalised
+    //     seq and qual (B5 fix — readers can produce soft-masked lowercase
+    //     bases, which the engine treats as no_anchor since it does exact
+    //     byte comparison)
+    //   - rcScratch / rcQualScratch: RC of upScratch, reverse of upQualScratch
+    //     (qual must be reversed in lockstep so the CDS-region Q-score check
+    //     in the engine looks at the right bases)
+    // All grow on demand if a read is longer than any seen so far.
+    let upScratch = new Uint8Array(256);
+    let upQualScratch = new Uint8Array(256);
     let rcScratch = new Uint8Array(256);
+    let rcQualScratch = new Uint8Array(256);
 
     // Fire one progress at the start of each source so the UI shows the
     // active file name immediately even before any chunks arrive.
@@ -142,19 +155,35 @@ export async function runPipeline(req: PipelineRequest): Promise<PipelineResult>
         if (meanPhred(rec.qual) < req.settings.minMeanPhred) {
           engine.recordLowQuality();
         } else {
+          // Grow scratch buffers if this read is larger than any seen so far.
+          if (rec.seq.length > upScratch.length) {
+            upScratch = new Uint8Array(rec.seq.length);
+            upQualScratch = new Uint8Array(rec.seq.length);
+            rcScratch = new Uint8Array(rec.seq.length);
+            rcQualScratch = new Uint8Array(rec.seq.length);
+          }
+          // B5: uppercase-normalise the read so soft-masked lowercase bases
+          // don't silently fail the anchor scan. ASCII letter case differs
+          // by exactly 0x20, so the test + subtract is a single branch.
+          const upSeq = uppercaseInto(rec.seq, upScratch);
+          // Qual line copied as-is (B2 needs it intact for the CDS Q check).
+          // We can avoid the copy on the forward path, but the RC path needs
+          // a reversed-qual buffer; for symmetry both branches use scratch.
+          const upQual = rec.qual.length === rec.seq.length
+            ? copyInto(rec.qual, upQualScratch)
+            : rec.qual; // malformed FASTQ; engine will handle the mismatch
+
           let reason =
             boundRoundIdx >= 0
-              ? engine.processReadForRound(rec.seq, boundRoundIdx)
-              : engine.processRead(rec.seq);
+              ? engine.processReadForRound(upSeq, upQual, boundRoundIdx)
+              : engine.processRead(upSeq, upQual);
           if (reason !== "assigned") {
-            if (rec.seq.length > rcScratch.length) {
-              rcScratch = new Uint8Array(rec.seq.length);
-            }
-            const rcBytes = rcInto(rec.seq, rcScratch);
+            const rcBytes = rcInto(upSeq, rcScratch);
+            const rcQual = reverseInto(upQual, rcQualScratch);
             reason =
               boundRoundIdx >= 0
-                ? engine.processReadForRound(rcBytes, boundRoundIdx)
-                : engine.processRead(rcBytes);
+                ? engine.processReadForRound(rcBytes, rcQual, boundRoundIdx)
+                : engine.processRead(rcBytes, rcQual);
           }
           if (reason !== "assigned") {
             engine.recordUnassigned(reason);
