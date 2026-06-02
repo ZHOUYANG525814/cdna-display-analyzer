@@ -47,11 +47,6 @@ export function ResultsStep() {
   // and the per-round count sample, then ships the result back via Comlink.
   // The main thread stays responsive throughout — without this, the parse
   // freezes the UI for ~30-60 s on a 758 MB CSV.
-  // gzip toggle for the CSV download. Default off so existing user workflows
-  // (open in Excel, drag-drop into a CSV viewer) don't break. Pandas users
-  // who pick gzip get a ~6× smaller file at the cost of needing
-  // `pd.read_csv("file.csv.gz")` — which is the default behaviour anyway.
-  const [gzipCsv, setGzipCsv] = useState(false);
   const [parsed, setParsed] = useState<StreamCsvResult | null>(null);
   useEffect(() => {
     let cancelled = false;
@@ -113,28 +108,17 @@ export function ResultsStep() {
             <CardTitle>Downloads</CardTitle>
             <CardDescription>All artifacts save locally — nothing is uploaded.</CardDescription>
           </div>
-          <div className="flex items-center gap-3">
-            <label className="flex items-center gap-1.5 text-xs text-muted-foreground cursor-pointer select-none">
-              <input
-                type="checkbox"
-                checked={gzipCsv}
-                onChange={(e) => setGzipCsv(e.target.checked)}
-                className="h-3.5 w-3.5 cursor-pointer"
-              />
-              gzip CSV (~6× smaller)
-            </label>
-            <Button
-              onClick={() =>
-                void exportOutcome(outcome, { projectName: state.projectName, gzipCsv })
-              }
-            >
-              <Download className="mr-1.5 h-4 w-4" /> Download all
-            </Button>
-          </div>
+          <Button
+            onClick={() =>
+              void exportOutcome(outcome, { projectName: state.projectName, gzipCsv: true })
+            }
+          >
+            <Download className="mr-1.5 h-4 w-4" /> Download all
+          </Button>
         </CardHeader>
         <CardContent>
           <ul className="text-sm text-muted-foreground space-y-1">
-            <li>• <code className="font-mono text-xs">Master_Enrichment_Matrix.csv{gzipCsv ? ".gz" : ""}</code> — the full peptide matrix{gzipCsv ? " (pandas reads .csv.gz natively)" : ""}</li>
+            <li>• <code className="font-mono text-xs">Master_Enrichment_Matrix.csv.gz</code> — the full peptide matrix (gzipped, ~6× smaller; pandas reads <code className="font-mono text-xs">.csv.gz</code> natively)</li>
             <li>• <code className="font-mono text-xs">run_stats.json</code> — per-round demultiplex counts (machine-readable)</li>
             <li>• <code className="font-mono text-xs">QC_Summary_Report.txt</code> — human-readable summary + methods + column reference</li>
           </ul>

@@ -37,6 +37,11 @@ interface VolcanoPoint {
   peptide: string;
   fdr: number;
   significant: boolean;
+  /** True for the first 20 rows in the (sort-by-Centered_Enrich-desc) matrix
+   *  — the same Top-20-by-enrichment cohort the dedicated table renders.
+   *  Drawn as a third layer with a distinct color/size so the chart visibly
+   *  surfaces "these are the headline hits". */
+  topAnchor: boolean;
 }
 
 interface Panel {
@@ -97,7 +102,8 @@ function buildPanel(
 
   let sig = 0;
   let strict = 0;
-  const allPoints: VolcanoPoint[] = stats.map((t) => {
+  const TOP_K_ANCHOR = 20;
+  const allPoints: VolcanoPoint[] = stats.map((t, i) => {
     const significant = t.fdr < FDR_THRESHOLD && t.log2FC > LFC_THRESHOLD;
     if (significant) sig++;
     if (t.fdr < FDR_STRICT && t.log2FC > LFC_THRESHOLD) strict++;
@@ -107,18 +113,17 @@ function buildPanel(
       peptide: t.peptide,
       fdr: t.fdr,
       significant,
+      // First K rows correspond to Top-K-by-enrichment because the analyzer
+      // pre-sorts on Centered_Enrich desc.
+      topAnchor: i < TOP_K_ANCHOR,
     };
   });
 
-  // Hierarchical subsample (Phase 6.16.1):
-  //   1. First 20 rows by sort order (the Top-20-by-enrichment anchor, same
-  //      cohort the dedicated Top-20 table shows) — always kept.
-  //   2. All FDR/LFC-significant points — always kept (publication payload).
-  //   3. Stride sample of the remaining background up to MAX_POINTS_PER_PANEL.
-  // Without (1), the headline Top-20 hits could be missed by the background
-  // stride sample if they didn't clear the visual significance gate, which
-  // would be jarring vs the "Top 20 by enrichment" table on the same page.
-  const TOP_K_ANCHOR = 20;
+  // Hierarchical subsample (Phase 6.16.1, visually distinct in Phase 6.16.2):
+  //   1. First K rows by sort order (= Top-K-by-enrichment cohort) — always
+  //      kept AND rendered in a distinct teal layer with larger markers.
+  //   2. All FDR/LFC-significant points — always kept (red layer).
+  //   3. Stride sample of remaining background up to MAX_POINTS_PER_PANEL.
   let points = allPoints;
   if (allPoints.length > MAX_POINTS_PER_PANEL) {
     const seen = new Set<number>();
@@ -229,8 +234,10 @@ function VolcanoTooltip({
           FDR ={" "}
           <span className="font-mono tabular-nums text-foreground">{p.fdr.toExponential(2)}</span>
         </div>
-        {p.significant ? (
-          <div className="font-medium text-destructive">significant</div>
+        {p.topAnchor ? (
+          <div className="font-medium text-primary">Top 20 by enrichment</div>
+        ) : p.significant ? (
+          <div className="font-medium text-destructive">significant (FDR &lt; 0.05)</div>
         ) : null}
       </div>
     </div>
@@ -238,8 +245,13 @@ function VolcanoTooltip({
 }
 
 function VolcanoPanel({ panel }: { panel: Panel }) {
-  const sig = panel.points.filter((p) => p.significant);
-  const bg = panel.points.filter((p) => !p.significant);
+  // Three-layer partition (rendered bottom → top in the order they're declared):
+  //   bg   — not significant, not top-K  (gray, small)
+  //   sig  — FDR/LFC significant, not top-K (red)
+  //   top  — Top-K-by-enrichment cohort (teal/primary, larger, always on top)
+  const top = panel.points.filter((p) => p.topAnchor);
+  const sig = panel.points.filter((p) => p.significant && !p.topAnchor);
+  const bg = panel.points.filter((p) => !p.significant && !p.topAnchor);
 
   const absMaxX = Math.max(2, ...panel.points.map((p) => Math.abs(p.x)));
   const maxY = Math.max(2, ...panel.points.map((p) => p.y));
@@ -364,12 +376,52 @@ function VolcanoPanel({ panel }: { panel: Panel }) {
                 <Cell key={i} />
               ))}
             </Scatter>
+            {/* Top-20 cohort — always rendered last so they sit on top of
+                everything else. Distinct primary/teal fill + larger marker +
+                contrasting border so the user can spot them at a glance
+                against the red "significant" mass. */}
+            <Scatter
+              name="Top 20 by enrichment"
+              data={top}
+              fill="hsl(var(--primary))"
+              // Recharts' ScatterShapeProps is overconstrained for TS strict
+              // mode; cast through `any` so we can pass a simple circle
+              // renderer. The runtime contract (cx, cy, fill) is stable.
+              shape={
+                ((props: { cx?: number; cy?: number; fill?: string }) => (
+                  <circle
+                    cx={props.cx}
+                    cy={props.cy}
+                    r={5}
+                    fill={props.fill}
+                    stroke="hsl(var(--background))"
+                    strokeWidth={1.5}
+                  />
+                  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                )) as any
+              }
+            />
+
           </ScatterChart>
         </ResponsiveContainer>
       </ChartPanel>
       <div className="mt-1 text-[10px] text-muted-foreground/80">
-        Right-tail Fisher's exact (small counts) / Yates χ² (large counts) · BH-adjusted FDR.
-        Subsampled to {panel.totalPlotted.toLocaleString()} of {panel.totalAvailable.toLocaleString()} variants.
+        <span className="inline-flex items-center gap-0.5 mr-2">
+          <span
+            className="inline-block h-2 w-2 rounded-full"
+            style={{ backgroundColor: "hsl(var(--primary))" }}
+          />
+          Top 20 by enrichment
+        </span>
+        <span className="inline-flex items-center gap-0.5 mr-2">
+          <span
+            className="inline-block h-2 w-2 rounded-full"
+            style={{ backgroundColor: "hsl(var(--destructive))" }}
+          />
+          FDR &lt; 0.05 &amp; log₂FC &gt; 1
+        </span>
+        · Subsampled to {panel.totalPlotted.toLocaleString()} of{" "}
+        {panel.totalAvailable.toLocaleString()} variants.
       </div>
     </div>
   );

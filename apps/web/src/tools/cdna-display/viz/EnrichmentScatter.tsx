@@ -257,15 +257,42 @@ function ScatterPanel({ panel }: { panel: Panel }) {
                 <Cell key={i} />
               ))}
             </Scatter>
+            {/* Top-20 cohort — drawn last with a larger radius + contrasting
+                border so they stand out unmistakably against the gray cloud,
+                matching the Top-20 table on the same page. Phase 6.16.2. */}
             <Scatter
-              name="Top hits"
+              name="Top 20 by enrichment"
               data={highlighted}
               fill="hsl(var(--destructive))"
-              fillOpacity={0.85}
+              // See VolcanoPlot for the cast rationale — Recharts' shape
+              // prop's runtime contract (cx, cy, fill) is stable but its TS
+              // declaration is overconstrained under strict mode.
+              shape={
+                ((props: { cx?: number; cy?: number; fill?: string }) => (
+                  <circle
+                    cx={props.cx}
+                    cy={props.cy}
+                    r={5}
+                    fill={props.fill}
+                    stroke="hsl(var(--background))"
+                    strokeWidth={1.5}
+                  />
+                  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                )) as any
+              }
             />
           </ScatterChart>
         </ResponsiveContainer>
       </ChartPanel>
+      <div className="mt-1 text-[10px] text-muted-foreground/80">
+        <span className="inline-flex items-center gap-0.5">
+          <span
+            className="inline-block h-2 w-2 rounded-full"
+            style={{ backgroundColor: "hsl(var(--destructive))" }}
+          />
+          Top {HIGHLIGHT_TOP} by enrichment (same rows as the table below)
+        </span>
+      </div>
     </div>
   );
 }

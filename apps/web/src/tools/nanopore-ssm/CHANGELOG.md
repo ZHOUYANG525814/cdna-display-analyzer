@@ -9,6 +9,37 @@ Date format: `YYYY-MM-DD`.
 
 ---
 
+## 2026-06-02 — Phase 6.16.2 — Top-20 made VISUALLY distinct; gzip default-on
+
+Phase 6.16.1 added Top-20 to the volcano/scatter sample but didn't make it
+visually distinguishable — the hierarchical change took effect but users
+couldn't see it because Top-20 rows were drawn identically to whatever
+layer they fell into (mostly "Significant" red). Fixed by drawing them
+as a third, distinct-colored layer.
+
+### Visual Top-20 layer (cDNA viz)
+
+  - **VolcanoPlot** — three layers instead of two:
+      gray "Not significant" (opacity 30%) → red "Significant" (opacity 85%)
+      → teal "Top 20 by enrichment" (r=5, bordered with the background
+      color for contrast, always rendered last so it sits on top).
+    A footer legend below the chart names each color explicitly. Tooltip
+    now badges "Top 20 by enrichment" for the cohort.
+  - **EnrichmentScatter** — the destructive-colored highlight cohort
+    (already there in Phase 6.16.1 with `HIGHLIGHT_TOP = 20`) now gets
+    the same r=5 + bordered-circle treatment so it stands out clearly
+    against the gray background cloud. Footer adds a small color-coded
+    legend explicitly tying these rows to the Top-20 table below.
+
+### gzip is now the default download
+
+The user requested no checkbox — they always want gzip. The Downloads
+card now ships `<project>_Master_Enrichment_Matrix.csv.gz` as the only
+CSV option. Other artifacts (`run_stats.json`, `QC_Summary_Report.txt`)
+stay uncompressed since they're already small.
+
+---
+
 ## 2026-06-02 — Phase 6.16.1 — Hierarchical viz sampling + gzip download
 
 User-driven follow-up to keep three cDNA viz cards looking dense and
