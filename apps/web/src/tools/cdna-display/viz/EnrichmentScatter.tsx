@@ -27,7 +27,10 @@ import type { PeptideRecord } from "./csvParse";
 import { ChartPanel } from "./ChartPanel";
 
 const MAX_POINTS = 2000;
-const HIGHLIGHT_TOP = 50;
+// Phase 6.16.1: anchor on the same Top-20 cohort that the "Top 20 by
+// enrichment" table renders, so the red-highlighted points in the scatter
+// are exactly the rows the user sees in that table.
+const HIGHLIGHT_TOP = 20;
 
 interface ScatterPoint {
   x: number;

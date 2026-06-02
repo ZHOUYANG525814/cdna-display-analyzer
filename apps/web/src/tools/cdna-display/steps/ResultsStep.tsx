@@ -47,6 +47,11 @@ export function ResultsStep() {
   // and the per-round count sample, then ships the result back via Comlink.
   // The main thread stays responsive throughout — without this, the parse
   // freezes the UI for ~30-60 s on a 758 MB CSV.
+  // gzip toggle for the CSV download. Default off so existing user workflows
+  // (open in Excel, drag-drop into a CSV viewer) don't break. Pandas users
+  // who pick gzip get a ~6× smaller file at the cost of needing
+  // `pd.read_csv("file.csv.gz")` — which is the default behaviour anyway.
+  const [gzipCsv, setGzipCsv] = useState(false);
   const [parsed, setParsed] = useState<StreamCsvResult | null>(null);
   useEffect(() => {
     let cancelled = false;
@@ -108,13 +113,28 @@ export function ResultsStep() {
             <CardTitle>Downloads</CardTitle>
             <CardDescription>All artifacts save locally — nothing is uploaded.</CardDescription>
           </div>
-          <Button onClick={() => exportOutcome(outcome, { projectName: state.projectName })}>
-            <Download className="mr-1.5 h-4 w-4" /> Download all
-          </Button>
+          <div className="flex items-center gap-3">
+            <label className="flex items-center gap-1.5 text-xs text-muted-foreground cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={gzipCsv}
+                onChange={(e) => setGzipCsv(e.target.checked)}
+                className="h-3.5 w-3.5 cursor-pointer"
+              />
+              gzip CSV (~6× smaller)
+            </label>
+            <Button
+              onClick={() =>
+                void exportOutcome(outcome, { projectName: state.projectName, gzipCsv })
+              }
+            >
+              <Download className="mr-1.5 h-4 w-4" /> Download all
+            </Button>
+          </div>
         </CardHeader>
         <CardContent>
           <ul className="text-sm text-muted-foreground space-y-1">
-            <li>• <code className="font-mono text-xs">Master_Enrichment_Matrix.csv</code> — the full peptide matrix</li>
+            <li>• <code className="font-mono text-xs">Master_Enrichment_Matrix.csv{gzipCsv ? ".gz" : ""}</code> — the full peptide matrix{gzipCsv ? " (pandas reads .csv.gz natively)" : ""}</li>
             <li>• <code className="font-mono text-xs">run_stats.json</code> — per-round demultiplex counts (machine-readable)</li>
             <li>• <code className="font-mono text-xs">QC_Summary_Report.txt</code> — human-readable summary + methods + column reference</li>
           </ul>
@@ -342,7 +362,6 @@ export function ResultsStep() {
                   <tr className="border-b text-left text-muted-foreground">
                     <th className="pb-2 pr-3 font-medium">#</th>
                     <th className="pb-2 pr-3 font-medium">Peptide</th>
-                    <th className="pb-2 pr-3 font-medium text-right">GC%</th>
                     {topPeptides.roundColumns.map((c) => (
                       <th key={c} className="pb-2 pr-3 font-medium text-right">{c}</th>
                     ))}
@@ -354,7 +373,6 @@ export function ResultsStep() {
                     <tr key={i} className="border-b last:border-0">
                       <td className="py-1.5 pr-3 font-mono text-muted-foreground">{i + 1}</td>
                       <td className="py-1.5 pr-3 font-mono">{r.peptide}</td>
-                      <td className="py-1.5 pr-3 font-mono text-right">{r.gc.toFixed(1)}</td>
                       {topPeptides.roundColumns.map((c) => (
                         <td key={c} className="py-1.5 pr-3 font-mono text-right">{r.rpm[c]?.toFixed(0) ?? "—"}</td>
                       ))}

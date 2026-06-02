@@ -28,15 +28,31 @@ function downloadBlob(blob: Blob, filename: string): void {
 export interface ExportOptions {
   /** Used as the file-name prefix for all downloads (sanitized). */
   projectName: string;
+  /** If true, stream-compress the CSV with gzip and download as
+   *  `<project>_Master_Enrichment_Matrix.csv.gz`. Compression runs via the
+   *  browser-native `CompressionStream` API (Chrome 80+, Firefox 113+,
+   *  Safari 16.4+) — zero bundle cost, streams natively so the main thread
+   *  stays responsive on multi-GB CSVs. Pandas reads `.csv.gz` directly
+   *  (`pd.read_csv("file.csv.gz")`). Typical compression ratio: ~6× for
+   *  the enrichment matrix's repeated round names + numeric patterns. */
+  gzipCsv?: boolean;
 }
 
-export function exportOutcome(outcome: PipelineOutcome, opts: ExportOptions): void {
+export async function exportOutcome(
+  outcome: PipelineOutcome,
+  opts: ExportOptions,
+): Promise<void> {
   const base = sanitizeFilename(opts.projectName || "cdna_run");
 
   if (outcome.csvBlob) {
-    // Already a Blob coming back from the worker — download directly,
-    // no re-clone.
-    downloadBlob(outcome.csvBlob, `${base}_Master_Enrichment_Matrix.csv`);
+    if (opts.gzipCsv) {
+      const gz = await gzipBlob(outcome.csvBlob);
+      downloadBlob(gz, `${base}_Master_Enrichment_Matrix.csv.gz`);
+    } else {
+      // Already a Blob coming back from the worker — download directly,
+      // no re-clone.
+      downloadBlob(outcome.csvBlob, `${base}_Master_Enrichment_Matrix.csv`);
+    }
   }
   downloadBlob(
     new Blob([outcome.runStatsJson], { type: "application/json" }),
@@ -46,6 +62,20 @@ export function exportOutcome(outcome: PipelineOutcome, opts: ExportOptions): vo
     new Blob([buildQcReport(outcome, opts.projectName)], { type: "text/plain;charset=utf-8" }),
     `${base}_QC_Summary_Report.txt`,
   );
+}
+
+/** Stream-gzip a Blob via the native CompressionStream API.
+ *
+ *  Why not fflate: CompressionStream operates on `ReadableStream` so the
+ *  encoder never holds the full payload in memory — critical for 758 MB
+ *  CSVs that would push V8's heap into GC-pause territory. Decode-side
+ *  (pandas, gzip CLI) is universal. */
+async function gzipBlob(blob: Blob): Promise<Blob> {
+  // CompressionStream is supported in every browser in our target matrix
+  // (Chrome 110+ per the plan). No feature detection needed; if it's
+  // missing we want a hard error so the user knows to upgrade.
+  const stream = blob.stream().pipeThrough(new CompressionStream("gzip"));
+  return await new Response(stream).blob();
 }
 
 function sanitizeFilename(s: string): string {

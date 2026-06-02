@@ -110,23 +110,41 @@ function buildPanel(
     };
   });
 
-  // Keep all the significant points (they're the publication payload) and
-  // subsample the rest so Recharts stays responsive on dense libraries.
+  // Hierarchical subsample (Phase 6.16.1):
+  //   1. First 20 rows by sort order (the Top-20-by-enrichment anchor, same
+  //      cohort the dedicated Top-20 table shows) — always kept.
+  //   2. All FDR/LFC-significant points — always kept (publication payload).
+  //   3. Stride sample of the remaining background up to MAX_POINTS_PER_PANEL.
+  // Without (1), the headline Top-20 hits could be missed by the background
+  // stride sample if they didn't clear the visual significance gate, which
+  // would be jarring vs the "Top 20 by enrichment" table on the same page.
+  const TOP_K_ANCHOR = 20;
   let points = allPoints;
   if (allPoints.length > MAX_POINTS_PER_PANEL) {
-    const sigPts = allPoints.filter((p) => p.significant);
-    const rest = allPoints.filter((p) => !p.significant);
-    const tail = MAX_POINTS_PER_PANEL - sigPts.length;
-    if (tail > 0 && rest.length > tail) {
-      const stride = Math.max(1, Math.floor(rest.length / tail));
-      const sampled: VolcanoPoint[] = [];
-      for (let i = 0; i < rest.length && sampled.length < tail; i += stride) {
-        sampled.push(rest[i]!);
-      }
-      points = [...sigPts, ...sampled];
-    } else {
-      points = [...sigPts, ...rest];
+    const seen = new Set<number>();
+    const keep: VolcanoPoint[] = [];
+    const take = (idx: number) => {
+      if (idx < 0 || idx >= allPoints.length || seen.has(idx)) return;
+      seen.add(idx);
+      keep.push(allPoints[idx]!);
+    };
+    // (1) anchor on first K rows
+    for (let i = 0; i < Math.min(TOP_K_ANCHOR, allPoints.length); i++) take(i);
+    // (2) all significant points
+    for (let i = 0; i < allPoints.length; i++) {
+      if (allPoints[i]!.significant) take(i);
     }
+    // (3) stride sample of remaining background
+    const remaining = MAX_POINTS_PER_PANEL - keep.length;
+    if (remaining > 0) {
+      const rest: number[] = [];
+      for (let i = 0; i < allPoints.length; i++) if (!seen.has(i)) rest.push(i);
+      const stride = Math.max(1, Math.floor(rest.length / remaining));
+      for (let i = 0; i < rest.length && keep.length < MAX_POINTS_PER_PANEL; i += stride) {
+        take(rest[i]!);
+      }
+    }
+    points = keep;
   }
 
   return {

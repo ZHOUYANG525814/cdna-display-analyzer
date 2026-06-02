@@ -316,6 +316,19 @@ const EMPTY_RESULT: StreamCsvResult = {
  *  consumers that need absolute rank or total can scale up from the sample. */
 const COUNTS_CAP_PER_ROUND = 30_000;
 
+/** Hierarchical-sampling K: number of top-by-count peptides per round that
+ *  we ALWAYS keep deterministically (in addition to the reservoir sample).
+ *
+ *  Phase 6.16.1: at 3.6M unique peptides reservoir-sampled to 30k, the
+ *  effective sampling rate is ~0.83% — the top-20 highest-count peptides
+ *  have ~0.17 expected hits in a uniform reservoir, i.e. almost certainly
+ *  missing. That leaves the right tail of the count histogram empty even
+ *  though those peptides exist. Tracking top-K deterministically alongside
+ *  the reservoir guarantees the histogram's right tail and the rank-
+ *  abundance plot's head are always rendered. K matches the Top-20 table
+ *  so the rendered head of each chart corresponds to those rows exactly. */
+const COUNTS_TOP_K_PER_ROUND = 20;
+
 export async function streamParseEnrichmentBlob(
   blob: Blob,
   opts: StreamCsvOptions = {},
@@ -338,6 +351,9 @@ export async function streamParseEnrichmentBlob(
   const countsByRound: Record<string, number[]> = {};
   const totalsByRound: Record<string, number> = {};
   const nByRound: Record<string, number> = {};
+  // Per-round top-K-by-count: sorted-ascending min-array of size ≤ K.
+  // arr[0] is the running min; we replace it when a larger count arrives.
+  const topKByRound: Record<string, number[]> = {};
 
   try {
     while (true) {
@@ -360,6 +376,7 @@ export async function streamParseEnrichmentBlob(
               countsByRound[r] = [];
               totalsByRound[r] = 0;
               nByRound[r] = 0;
+              topKByRound[r] = [];
             }
           } else {
             consumeRow(line, header, {
@@ -370,6 +387,7 @@ export async function streamParseEnrichmentBlob(
               countsByRound,
               totalsByRound,
               nByRound,
+              topKByRound,
             });
             totalRows++;
           }
@@ -388,6 +406,7 @@ export async function streamParseEnrichmentBlob(
         countsByRound,
         totalsByRound,
         nByRound,
+        topKByRound,
       });
       totalRows++;
     }
@@ -397,9 +416,17 @@ export async function streamParseEnrichmentBlob(
 
   if (!header) return EMPTY_RESULT;
 
-  // Sort per-round counts desc, matching the legacy parsePerRoundCounts shape.
+  // Hierarchical merge: union top-K-by-count with the reservoir sample, then
+  // sort desc. Duplicates are fine for downstream binning + log-spaced
+  // sampling (a single observed count can legitimately appear multiple
+  // times if multiple peptides have the same Count_<r>). The result is no
+  // longer a perfectly uniform sample, but downstream consumers care about
+  // shape + tail visibility more than perfect statistical purity here.
   for (const r of header.countRounds) {
-    countsByRound[r]!.sort((a, b) => b - a);
+    const topK = topKByRound[r]!;
+    const reservoir = countsByRound[r]!;
+    for (const v of topK) reservoir.push(v);
+    reservoir.sort((a, b) => b - a);
   }
 
   return {
@@ -557,6 +584,10 @@ interface RowSinkState {
   countsByRound: Record<string, number[]>;
   totalsByRound: Record<string, number>;
   nByRound: Record<string, number>;
+  /** Per-round top-K-by-count, kept sorted ascending so arr[0] is the
+   *  running min (cheapest comparison point for the "should this replace
+   *  the smallest of the top K?" test). */
+  topKByRound: Record<string, number[]>;
 }
 
 function consumeRow(line: string, plan: HeaderPlan, sink: RowSinkState): void {
@@ -582,22 +613,36 @@ function consumeRow(line: string, plan: HeaderPlan, sink: RowSinkState): void {
   };
 
   // (1) per-round counts — totals + distinct-peptide counts are tracked
-  // exactly; the count arrays themselves are reservoir-sampled (Algorithm R)
-  // when the library exceeds COUNTS_CAP_PER_ROUND. This keeps memory bounded
-  // and downstream sort/iterate fast without changing what the rank-abundance
-  // + count-histogram visualizations show (they're already binned/log-spaced).
+  // exactly; the count arrays themselves are HIERARCHICALLY sampled:
+  //   - top-K-by-count kept deterministically  (Phase 6.16.1: K = 20)
+  //   - reservoir sample of size COUNTS_CAP_PER_ROUND for everyone else
+  // The merge happens after streaming. This guarantees the rank-abundance
+  // head and the count-histogram right tail render correctly even when the
+  // reservoir miss rate for rare-but-extreme variants is high.
   for (const { round, idx } of plan.countCols) {
     const v = Number(cell(idx));
     if (Number.isFinite(v) && v > 0) {
       sink.totalsByRound[round]! += v;
       const seen = sink.nByRound[round]! + 1;
       sink.nByRound[round] = seen;
+      // Reservoir branch (uniform random sample of the full distribution).
       const arr = sink.countsByRound[round]!;
       if (arr.length < COUNTS_CAP_PER_ROUND) {
         arr.push(v);
       } else {
         const j = Math.floor(Math.random() * seen);
         if (j < COUNTS_CAP_PER_ROUND) arr[j] = v;
+      }
+      // Top-K-by-count branch (deterministic head). K is small (20) so
+      // insertion-sort is cheaper than a full heap. arr[0] is the running
+      // min, so we only do work when v could replace it.
+      const topK = sink.topKByRound[round]!;
+      if (topK.length < COUNTS_TOP_K_PER_ROUND) {
+        topK.push(v);
+        topK.sort((a, b) => a - b);
+      } else if (v > topK[0]!) {
+        topK[0] = v;
+        topK.sort((a, b) => a - b);
       }
     }
   }

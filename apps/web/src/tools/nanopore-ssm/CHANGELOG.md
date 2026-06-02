@@ -9,6 +9,52 @@ Date format: `YYYY-MM-DD`.
 
 ---
 
+## 2026-06-02 — Phase 6.16.1 — Hierarchical viz sampling + gzip download
+
+User-driven follow-up to keep three cDNA viz cards looking dense and
+useful at million-peptide scale, plus a long-requested bandwidth win on
+the download path. Nanopore Results page is unchanged.
+
+### Hierarchical sampling (cDNA viz)
+
+Three charts were vulnerable to "ugly when top-K-sampled" failure modes:
+
+  - **Volcano** — previously kept all significant points + stride-sampled
+    background. If a Top-20 row didn't clear the FDR/LFC visual gate, it
+    could be dropped from the plot even though it shows up in the Top-20
+    table on the same page. New: always include first 20 rows by sort
+    order, *then* all significant points, then stride sample.
+  - **Enrichment scatter** — `HIGHLIGHT_TOP` dropped 50 → 20 so the red-
+    highlighted cohort matches the Top-20 table exactly.
+  - **Count histogram + rank-abundance feed** (in csvParse.ts):
+    `countsByRound` now uses *hierarchical* sampling, not pure reservoir.
+    Top-K-by-count per round (K = 20) is kept deterministically alongside
+    the 30k reservoir. At ~3.6M peptides the reservoir's per-rank hit
+    probability is ~0.0001 — the right tail of the count histogram was
+    effectively empty without the deterministic head.
+
+### Top-20 table
+
+GC% column removed (low-utility, derivable from `Dominant_DNA_Seq` if
+ever needed). One fewer column = the round-RPM columns get more room
+without overflow on narrow viewports.
+
+### gzip download (.csv.gz)
+
+New checkbox in the Downloads card: "gzip CSV (~6× smaller)". When ticked,
+the CSV blob is streamed through `CompressionStream("gzip")` (browser-
+native API, Chrome 80+ / FF 113+ / Safari 16.4+ — zero bundle cost) and
+downloaded as `<project>_Master_Enrichment_Matrix.csv.gz`. Pandas reads
+this natively via `pd.read_csv("file.csv.gz")`.
+
+For the user's earlier 758 MB CSV, gzip drops it to ~120 MB on typical
+enrichment-matrix patterns (highly repetitive round names, numeric cells).
+Compression runs streamed, so the main thread stays responsive even on
+multi-GB CSVs. The other two artifacts (run_stats.json, QC report) are
+already small enough to ship uncompressed.
+
+---
+
 ## 2026-06-02 — Phase 6.16 — σ² column for ML weights; drop redundant columns
 
 User-driven schema change to support downstream machine-learning workflows
