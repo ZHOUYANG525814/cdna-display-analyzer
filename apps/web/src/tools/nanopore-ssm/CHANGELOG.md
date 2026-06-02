@@ -9,6 +9,59 @@ Date format: `YYYY-MM-DD`.
 
 ---
 
+## 2026-06-02 — Phase 6.15.1 — Follow-up: matrix + counts caps lowered
+
+The Phase 6.15 changes moved CSV parsing into the worker but the Results
+page on a 3.6M-peptide / 758 MB-CSV run was still freezing. Root cause:
+two size caps that were still too generous for that scale.
+
+  - `tools/cdna-display/steps/ResultsStep.tsx`: `matrixLimit` 50,000 → 5,000.
+    The Comlink structured-clone return shrinks ~10× — was the dominant
+    cost after the worker finished parsing.
+  - `tools/cdna-display/viz/csvParse.ts`: `COUNTS_CAP_PER_ROUND` 100,000 →
+    30,000. The first-mount Gini sort + log10/min-max scan in RankAbundance
+    / CountHistogram now finish in <50 ms per round instead of multi-hundred.
+
+Both caps are well above what any downstream viz actually consumes (volcano
+1.5k, scatter 2k, histogram 24 bins, rank-abundance 200 chart points), so
+zero visible behavioural change.
+
+## 2026-06-02 — Phase 6.15 — Results-page responsiveness on multi-GB CSVs
+
+Triggered by a 10 GB / 758 MB-CSV cDNA run that froze the dashboard for
+~30-60 s on first paint. The Nanopore tool itself is unchanged in this
+phase, but it shares the pipeline worker with cDNA-DISPLAY; the worker
+gained a generic `parseCsv` method that the cDNA Results page now uses
+instead of parsing on the main thread. Nanopore can adopt the same hook
+if/when its Results page starts streaming a multi-GB CSV.
+
+### What changed (cDNA-side, listed for cross-tool context)
+
+  - `worker/pipeline.worker.ts`: added `parseCsv(blob, opts)` method
+    (Comlink-exposed) that wraps `streamParseEnrichmentBlob`. Main thread
+    no longer freezes during the multi-second CSV walk.
+  - `tools/cdna-display/viz/csvParse.ts`:
+      - Per-round count arrays reservoir-sampled (Algorithm R) at 100k
+        entries. True totals + distinct-peptide counts still tracked
+        exactly via `totalsByRound` / `nByRound`.
+      - Parser now captures `Pval_Enrich_*` and `FDR_q_*` cells into
+        `PeptideRecord.pval` / `.fdr` so downstream viz can consume
+        precomputed analyzer-side stats.
+  - `tools/cdna-display/viz/VolcanoPlot.tsx`: when comparing dest-vs-first
+    (matches every panel for 2 rounds + the global panel for ≥3 rounds),
+    use the precomputed `pval` / `fdr` columns instead of recomputing
+    Fisher's exact. Only the R_i-vs-R_{i-1} stepwise panels for i ≥ 2
+    still call the on-the-fly p-value path. Scatter cap dropped 5000 → 1500.
+  - New `components/LazyMount.tsx`: IntersectionObserver-based wrapper.
+    Each cDNA Results viz card is now lazy-mounted so first-paint cost is
+    paid per card as the user scrolls, not all at once.
+
+If Nanopore's Results page hits the same first-paint freeze later, the
+same three knobs apply: move parsing to the worker, reservoir-cap the
+per-(site, round) count arrays, and lazy-mount the heavy charts.
+
+---
+
 ## 2026-06-01 — Phase 6.14 — Methods card + column reference (both tools)
 
 User asked for detailed math definitions for the non-intuitive columns — in

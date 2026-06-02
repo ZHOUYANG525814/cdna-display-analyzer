@@ -5,6 +5,10 @@
 import * as Comlink from "comlink";
 import type { PipelineWorkerApi } from "./pipeline.worker";
 import type {
+  StreamCsvOptions,
+  StreamCsvResult,
+} from "../tools/cdna-display/viz/csvParse";
+import type {
   NanoporeJob,
   NanoporeOutcome,
   PipelineJob,
@@ -118,6 +122,18 @@ export async function runNanoporeInWorker(
     console.error("[main] worker.runNanopore() threw", err);
     throw err;
   }
+}
+
+/** Parse the analyzer's CSV blob inside the worker so the streaming pass
+ *  (multi-second on a 758 MB blob) doesn't freeze the main thread. Returns
+ *  the same StreamCsvResult shape the legacy in-page parser produced. */
+export async function parseCsvInWorker(
+  blob: Blob,
+  opts: StreamCsvOptions = {},
+): Promise<StreamCsvResult> {
+  const a = ensureWorker();
+  await workerReady;
+  return a.parseCsv(blob, opts);
 }
 
 export function terminateWorker(): void {

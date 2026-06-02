@@ -26,7 +26,10 @@ import { ChartPanel } from "./ChartPanel";
 const FDR_THRESHOLD = 0.05;
 const FDR_STRICT = 0.01;
 const LFC_THRESHOLD = 1;
-const MAX_POINTS_PER_PANEL = 5000;
+// Phase 6.15: dropped from 5000 → 1500. Recharts SVG slows noticeably past
+// ~2k scatter points; significant hits are kept in full regardless of cap,
+// so reducing the background sample only affects the gray "cloud" density.
+const MAX_POINTS_PER_PANEL = 1500;
 
 interface VolcanoPoint {
   x: number; // log2 fold change
@@ -51,17 +54,43 @@ function buildPanel(
   dest: string,
   label: string,
   totalsByRound: Record<string, number>,
+  firstRound: string,
 ): Panel {
-  const tests = computeEnrichmentTests(
-    rows,
-    src,
-    dest,
-    totalsByRound[src] ?? 0,
-    totalsByRound[dest] ?? 0,
-  );
+  // Fast path (Phase 6.15): when src is the first round, the analyzer has
+  // already written Pval_Enrich_<dest>_vs_<first> + FDR_q_<dest>_vs_<first>
+  // into the CSV — surfaced as row.pval[dest] / row.fdr[dest] by the parser.
+  // Use those instead of recomputing Fisher's exact on the main thread; the
+  // re-run is the volcano's main bottleneck on million-peptide libraries.
+  const usePrecomputed =
+    src === firstRound &&
+    rows.length > 0 &&
+    Number.isFinite(rows[0]!.pval[dest]) &&
+    Number.isFinite(rows[0]!.fdr[dest]);
+
+  type RowStat = { peptide: string; log2FC: number; fdr: number };
+  let stats: RowStat[];
+  if (usePrecomputed) {
+    stats = rows.map((r) => ({
+      peptide: r.peptide,
+      // r.global[dest] is the same log₂((RPM+1)/(RPM₀+1)) that the analyzer
+      // uses as the Z-statistic numerator, so it lines up with r.pval[dest].
+      log2FC: r.global[dest] ?? 0,
+      fdr: r.fdr[dest] ?? 1,
+    }));
+  } else {
+    const tests = computeEnrichmentTests(
+      rows,
+      src,
+      dest,
+      totalsByRound[src] ?? 0,
+      totalsByRound[dest] ?? 0,
+    );
+    stats = tests.map((t) => ({ peptide: t.peptide, log2FC: t.log2FC, fdr: t.fdr }));
+  }
+
   let sig = 0;
   let strict = 0;
-  const allPoints: VolcanoPoint[] = tests.map((t) => {
+  const allPoints: VolcanoPoint[] = stats.map((t) => {
     const significant = t.fdr < FDR_THRESHOLD && t.log2FC > LFC_THRESHOLD;
     if (significant) sig++;
     if (t.fdr < FDR_STRICT && t.log2FC > LFC_THRESHOLD) strict++;
@@ -114,20 +143,22 @@ interface Props {
 export function VolcanoPlot({ rows, totalsByRound, roundNames }: Props) {
   const panels = useMemo<Panel[]>(() => {
     if (rows.length === 0 || roundNames.length < 2) return [];
+    const firstRound = roundNames[0]!;
     const out: Panel[] = [];
     for (let i = 1; i < roundNames.length; i++) {
       out.push(
-        buildPanel(rows, roundNames[i - 1]!, roundNames[i]!, "Stepwise", totalsByRound),
+        buildPanel(rows, roundNames[i - 1]!, roundNames[i]!, "Stepwise", totalsByRound, firstRound),
       );
     }
     if (roundNames.length >= 3) {
       out.push(
         buildPanel(
           rows,
-          roundNames[0]!,
+          firstRound,
           roundNames[roundNames.length - 1]!,
           "Global",
           totalsByRound,
+          firstRound,
         ),
       );
     }

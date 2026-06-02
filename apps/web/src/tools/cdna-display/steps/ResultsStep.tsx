@@ -11,12 +11,11 @@ import { EnrichmentScatter } from "@/tools/cdna-display/viz/EnrichmentScatter";
 import { RankAbundance } from "@/tools/cdna-display/viz/RankAbundance";
 import { SequenceLogo } from "@/tools/cdna-display/viz/SequenceLogo";
 import { VolcanoPlot } from "@/tools/cdna-display/viz/VolcanoPlot";
-import {
-  streamParseEnrichmentBlob,
-  type StreamCsvResult,
-} from "@/tools/cdna-display/viz/csvParse";
+import type { StreamCsvResult } from "@/tools/cdna-display/viz/csvParse";
+import { parseCsvInWorker } from "@/worker/workerClient";
 import { CDNA_METHODS } from "@cdna/core";
 import { MethodsCard } from "@/components/MethodsCard";
+import { LazyMount } from "@/components/LazyMount";
 
 export function ResultsStep() {
   const state = useRunStore();
@@ -43,18 +42,23 @@ export function ResultsStep() {
   // The CSV crosses the worker boundary as a Blob (cheap structured clone by
   // reference). On multi-GB runs the CSV can total several GB — well past
   // V8's ~537 MB single-string ceiling — so we DON'T call `blob.text()`.
-  // Instead, a single streaming pass reads the Blob with `blob.stream()` +
-  // an incremental TextDecoder, fills the top-N preview, the capped matrix
-  // for the per-peptide UI, and the full per-round count arrays in one go.
-  // Nothing larger than a per-line carry buffer (≪ MB) is ever held as a
-  // single JS string.
+  // Instead, the worker does a single streaming pass with `blob.stream()` +
+  // an incremental TextDecoder, fills the top-N preview, the capped matrix,
+  // and the per-round count sample, then ships the result back via Comlink.
+  // The main thread stays responsive throughout — without this, the parse
+  // freezes the UI for ~30-60 s on a 758 MB CSV.
   const [parsed, setParsed] = useState<StreamCsvResult | null>(null);
   useEffect(() => {
     let cancelled = false;
     if (outcome.csvBlob) {
       setParsed(null);
-      void streamParseEnrichmentBlob(outcome.csvBlob, {
-        matrixLimit: 50_000,
+      // Phase 6.15.1: matrixLimit dropped 50k → 5k. The matrix only feeds
+      // EnrichmentScatter (2k cap), Volcano (1.5k cap), and SequenceLogo
+      // (top 100), so 5k is plenty. The Comlink structured-clone return
+      // from the worker shrinks ~10× — eliminates the multi-second freeze
+      // on result delivery for million-peptide libraries.
+      void parseCsvInWorker(outcome.csvBlob, {
+        matrixLimit: 5_000,
         topLimit: 20,
       })
         .then((r) => {
@@ -63,7 +67,7 @@ export function ResultsStep() {
         .catch((err) => {
           // Soft-fail: dashboard widgets just render empty. Download still works.
           if (!cancelled) {
-            console.error("[ResultsStep] streamParseEnrichmentBlob failed:", err);
+            console.error("[ResultsStep] parseCsvInWorker failed:", err);
             setParsed(null);
           }
         });
@@ -85,6 +89,7 @@ export function ResultsStep() {
   const perRoundCounts = parsed?.perRoundCounts ?? {
     countsByRound: {},
     totalsByRound: {},
+    nByRound: {},
     roundNames: [],
   };
 
@@ -217,11 +222,13 @@ export function ResultsStep() {
             </CardDescription>
           </CardHeader>
           <CardContent>
-            <RankAbundance
-              countsByRound={perRoundCounts.countsByRound}
-              totalsByRound={perRoundCounts.totalsByRound}
-              roundNames={perRoundCounts.roundNames}
-            />
+            <LazyMount minHeight={340}>
+              <RankAbundance
+                countsByRound={perRoundCounts.countsByRound}
+                totalsByRound={perRoundCounts.totalsByRound}
+                roundNames={perRoundCounts.roundNames}
+              />
+            </LazyMount>
           </CardContent>
         </Card>
       )}
@@ -238,10 +245,12 @@ export function ResultsStep() {
             </CardDescription>
           </CardHeader>
           <CardContent>
-            <CountHistogram
-              countsByRound={perRoundCounts.countsByRound}
-              roundNames={perRoundCounts.roundNames}
-            />
+            <LazyMount minHeight={240}>
+              <CountHistogram
+                countsByRound={perRoundCounts.countsByRound}
+                roundNames={perRoundCounts.roundNames}
+              />
+            </LazyMount>
           </CardContent>
         </Card>
       )}
@@ -259,10 +268,12 @@ export function ResultsStep() {
             </CardDescription>
           </CardHeader>
           <CardContent>
-            <SequenceLogo
-              rows={parsedMatrix.rows}
-              roundNames={parsedMatrix.roundNames}
-            />
+            <LazyMount minHeight={260}>
+              <SequenceLogo
+                rows={parsedMatrix.rows}
+                roundNames={parsedMatrix.roundNames}
+              />
+            </LazyMount>
           </CardContent>
         </Card>
       )}
@@ -279,10 +290,12 @@ export function ResultsStep() {
             </CardDescription>
           </CardHeader>
           <CardContent>
-            <EnrichmentScatter
-              rows={parsedMatrix.rows}
-              roundNames={parsedMatrix.roundNames}
-            />
+            <LazyMount minHeight={320}>
+              <EnrichmentScatter
+                rows={parsedMatrix.rows}
+                roundNames={parsedMatrix.roundNames}
+              />
+            </LazyMount>
           </CardContent>
         </Card>
       )}
@@ -292,19 +305,22 @@ export function ResultsStep() {
           <CardHeader>
             <CardTitle>Volcano plot — statistical significance</CardTitle>
             <CardDescription>
-              For each peptide, a one-sided Fisher's exact test (or
-              Yates-corrected χ² for large counts) compares its count in the
-              later vs earlier round, with Benjamini–Hochberg FDR correction.
+              For each peptide, the analyzer's pre-computed Wald p-value (for
+              the round-vs-first comparison) is shown with Benjamini–Hochberg
+              FDR. For other stepwise pairs we fall back to a one-sided
+              Fisher's exact test (or Yates-corrected χ² for large counts).
               Red points clear both FDR &lt; 0.05 and log₂FC &gt; 1
               (≥ 2× enrichment) — these are the publication-grade hits.
             </CardDescription>
           </CardHeader>
           <CardContent>
-            <VolcanoPlot
-              rows={parsedMatrix.rows}
-              totalsByRound={perRoundCounts.totalsByRound}
-              roundNames={parsedMatrix.roundNames}
-            />
+            <LazyMount minHeight={340}>
+              <VolcanoPlot
+                rows={parsedMatrix.rows}
+                totalsByRound={perRoundCounts.totalsByRound}
+                roundNames={parsedMatrix.roundNames}
+              />
+            </LazyMount>
           </CardContent>
         </Card>
       )}

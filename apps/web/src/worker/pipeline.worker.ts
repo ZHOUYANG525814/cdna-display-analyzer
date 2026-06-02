@@ -16,6 +16,11 @@ import {
 import type { IAuthProvider, IFastqSource } from "@cdna/types";
 import { LocalFastqSource } from "../adapters/LocalFastqSource";
 import { DriveFastqSource } from "../adapters/DriveFastqSource";
+import {
+  streamParseEnrichmentBlob,
+  type StreamCsvOptions,
+  type StreamCsvResult,
+} from "../tools/cdna-display/viz/csvParse";
 import type {
   NanoporeJob,
   NanoporeOutcome,
@@ -360,6 +365,30 @@ const api = {
       const err = e as Error;
       const msg = `worker runNanopore() threw: ${err.name}: ${err.message}\n${err.stack ?? "(no stack)"}`;
       console.error(`[worker] ${msg}`);
+      throw e;
+    }
+  },
+
+  /**
+   * Streaming parse of the analyzer's Master_Enrichment_Matrix CSV into the
+   * shape the cDNA Results-page dashboard expects (top-N preview, capped
+   * matrix, per-round count sample). Lives on the worker so the multi-second
+   * walk over a 758 MB blob doesn't freeze the main thread. The result is
+   * structured-cloneable (plain objects + numbers + strings) so postMessage
+   * back to the caller is straightforward.
+   */
+  async parseCsv(blob: Blob, opts: StreamCsvOptions = {}): Promise<StreamCsvResult> {
+    wlog(`parseCsv() entered (blob.size=${blob.size})`);
+    try {
+      const result = await streamParseEnrichmentBlob(blob, opts);
+      wlog(
+        `parseCsv() done: rows=${result.totalRows}, matrix=${result.matrix.rows.length}, ` +
+          `top=${result.top.rows.length}`,
+      );
+      return result;
+    } catch (e: unknown) {
+      const err = e as Error;
+      console.error(`[worker] parseCsv() threw: ${err.name}: ${err.message}`);
       throw e;
     }
   },

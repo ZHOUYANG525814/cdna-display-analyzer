@@ -19,6 +19,12 @@ export interface PeptideRecord {
   stepwise: Record<string, number>;
   /** Enrich_Global_<roundN>_vs_<round0>, indexed by the destination round. */
   global: Record<string, number>;
+  /** Analyzer-side Wald p-value for Enrich_Global_<dest>_vs_<first>, indexed
+   *  by destination round. Lets the volcano render without recomputing
+   *  Fisher's exact on the main thread. Absent rounds default to NaN. */
+  pval: Record<string, number>;
+  /** Analyzer-side BH-adjusted q-value for FDR_q_<dest>_vs_<first>. */
+  fdr: Record<string, number>;
 }
 
 export interface ParsedMatrix {
@@ -93,6 +99,8 @@ export function parseEnrichmentMatrix(csv: string, limit?: number): ParsedMatrix
       rpm: {},
       stepwise: {},
       global: {},
+      pval: {},
+      fdr: {},
     };
     for (const { round, idx } of countCols) {
       rec.count[round] = Number(cells[idx] ?? "0");
@@ -117,13 +125,19 @@ export function parseEnrichmentMatrix(csv: string, limit?: number): ParsedMatrix
 }
 
 export interface PerRoundCounts {
-  /** Round name → sorted-descending array of per-peptide counts. Length = number
-   *  of distinct peptides observed in that round (peptides with count 0 are
-   *  excluded). */
+  /** Round name → sorted-descending array of per-peptide counts. Reservoir-
+   *  capped at COUNTS_CAP_PER_ROUND entries (see streamParseEnrichmentBlob);
+   *  for libraries with more unique peptides than the cap, this is a uniform
+   *  random sample of the full distribution. Use `nByRound` to recover the
+   *  true library size when scaling absolute ranks for display. */
   countsByRound: Record<string, number[]>;
-  /** Round name → total reads passing QC (= sum of counts). This is the same
-   *  value RPM normalisation uses upstream. */
+  /** Round name → total reads passing QC (= sum of counts; the TRUE total,
+   *  unaffected by reservoir sampling). Same value RPM normalisation uses. */
   totalsByRound: Record<string, number>;
+  /** Round name → number of distinct peptides observed with count > 0 (the
+   *  TRUE peptide-distinct count, unaffected by sampling). Lets rank-abundance
+   *  scale the x-axis to absolute rank rather than sample rank. */
+  nByRound: Record<string, number>;
   /** Round names in CSV column order. */
   roundNames: string[];
 }
@@ -137,7 +151,12 @@ export interface PerRoundCounts {
  *  Memory: O(unique peptides × rounds) numbers. For a 500k-peptide library
  *  with 4 rounds that's ~16 MB — fine on commodity hardware. */
 export function parsePerRoundCounts(csv: string): PerRoundCounts {
-  const empty: PerRoundCounts = { countsByRound: {}, totalsByRound: {}, roundNames: [] };
+  const empty: PerRoundCounts = {
+    countsByRound: {},
+    totalsByRound: {},
+    nByRound: {},
+    roundNames: [],
+  };
   if (!csv) return empty;
 
   const headerEnd = csv.indexOf("\n");
@@ -155,9 +174,11 @@ export function parsePerRoundCounts(csv: string): PerRoundCounts {
 
   const countsByRound: Record<string, number[]> = {};
   const totalsByRound: Record<string, number> = {};
+  const nByRound: Record<string, number> = {};
   for (const { round } of countCols) {
     countsByRound[round] = [];
     totalsByRound[round] = 0;
+    nByRound[round] = 0;
   }
 
   const maxIdx = countCols.reduce((m, c) => Math.max(m, c.idx), 0);
@@ -192,6 +213,7 @@ export function parsePerRoundCounts(csv: string): PerRoundCounts {
       if (Number.isFinite(v) && v > 0) {
         countsByRound[round]!.push(v);
         totalsByRound[round]! += v;
+        nByRound[round]!++;
       }
     }
 
@@ -206,6 +228,7 @@ export function parsePerRoundCounts(csv: string): PerRoundCounts {
   return {
     countsByRound,
     totalsByRound,
+    nByRound,
     roundNames: countCols.map((c) => c.round),
   };
 }
@@ -259,10 +282,24 @@ export interface StreamCsvOptions {
 
 const EMPTY_RESULT: StreamCsvResult = {
   matrix: { rows: [], roundNames: [] },
-  perRoundCounts: { countsByRound: {}, totalsByRound: {}, roundNames: [] },
+  perRoundCounts: { countsByRound: {}, totalsByRound: {}, nByRound: {}, roundNames: [] },
   top: { rows: [], totalRows: 0, sortColumn: "", roundColumns: [] },
   totalRows: 0,
 };
+
+/** Reservoir cap on per-round count arrays.
+ *
+ *  Phase 6.15.1: dropped 100k → 30k. Downstream consumers either log-bin
+ *  the counts (CountHistogram: 24 bins) or log-space-subsample them
+ *  (RankAbundance: 200 points), so 30k is statistically equivalent to
+ *  100k or full population for both viz. At 30k the `Array.sort` inside
+ *  `giniCoefficient` and the log10/min/max scan inside CountHistogram run
+ *  in <50 ms per round — eliminates the visible blocking on first-mount.
+ *
+ *  The TRUE library size (sum of all counts, number of distinct peptides)
+ *  is still tracked exactly via `totalsByRound` / `nByRound`, so downstream
+ *  consumers that need absolute rank or total can scale up from the sample. */
+const COUNTS_CAP_PER_ROUND = 30_000;
 
 export async function streamParseEnrichmentBlob(
   blob: Blob,
@@ -285,6 +322,7 @@ export async function streamParseEnrichmentBlob(
   const topRows: TopRow[] = [];
   const countsByRound: Record<string, number[]> = {};
   const totalsByRound: Record<string, number> = {};
+  const nByRound: Record<string, number> = {};
 
   try {
     while (true) {
@@ -306,6 +344,7 @@ export async function streamParseEnrichmentBlob(
             for (const r of header.countRounds) {
               countsByRound[r] = [];
               totalsByRound[r] = 0;
+              nByRound[r] = 0;
             }
           } else {
             consumeRow(line, header, {
@@ -315,6 +354,7 @@ export async function streamParseEnrichmentBlob(
               topRows,
               countsByRound,
               totalsByRound,
+              nByRound,
             });
             totalRows++;
           }
@@ -332,6 +372,7 @@ export async function streamParseEnrichmentBlob(
         topRows,
         countsByRound,
         totalsByRound,
+        nByRound,
       });
       totalRows++;
     }
@@ -351,6 +392,7 @@ export async function streamParseEnrichmentBlob(
     perRoundCounts: {
       countsByRound,
       totalsByRound,
+      nByRound,
       roundNames: header.countRounds.slice(),
     },
     top: {
@@ -373,6 +415,12 @@ interface HeaderPlan {
   rpmCols: { name: string; round: string; idx: number }[];
   stepwiseCols: { dest: string; idx: number }[];
   globalCols: { dest: string; idx: number }[];
+  /** Pval_Enrich_<dest>_vs_<first>. Indexed by destination round. Lets the
+   *  volcano use the analyzer's pre-computed p-values instead of recomputing
+   *  Fisher's exact on the main thread. */
+  pvalCols: { dest: string; idx: number }[];
+  /** FDR_q_<dest>_vs_<first>. Same indexing convention as pvalCols. */
+  fdrCols: { dest: string; idx: number }[];
   matrixRoundNames: string[];
   countRounds: string[];
   // Sort column for the top-N preview.
@@ -398,6 +446,8 @@ function planHeader(headerLine: string): HeaderPlan | null {
   const rpmCols: HeaderPlan["rpmCols"] = [];
   const stepwiseCols: HeaderPlan["stepwiseCols"] = [];
   const globalCols: HeaderPlan["globalCols"] = [];
+  const pvalCols: HeaderPlan["pvalCols"] = [];
+  const fdrCols: HeaderPlan["fdrCols"] = [];
   const roundNamesSet = new Set<string>();
 
   for (let i = 0; i < headers.length; i++) {
@@ -418,6 +468,14 @@ function planHeader(headerLine: string): HeaderPlan | null {
       const rest = h.slice("Enrich_Global_".length);
       const sepIdx = rest.indexOf("_vs_");
       globalCols.push({ dest: sepIdx === -1 ? rest : rest.slice(0, sepIdx), idx: i });
+    } else if (h.startsWith("Pval_Enrich_")) {
+      const rest = h.slice("Pval_Enrich_".length);
+      const sepIdx = rest.indexOf("_vs_");
+      pvalCols.push({ dest: sepIdx === -1 ? rest : rest.slice(0, sepIdx), idx: i });
+    } else if (h.startsWith("FDR_q_")) {
+      const rest = h.slice("FDR_q_".length);
+      const sepIdx = rest.indexOf("_vs_");
+      fdrCols.push({ dest: sepIdx === -1 ? rest : rest.slice(0, sepIdx), idx: i });
     }
   }
 
@@ -447,6 +505,8 @@ function planHeader(headerLine: string): HeaderPlan | null {
   for (const c of rpmCols) maxIdxNeeded = Math.max(maxIdxNeeded, c.idx);
   for (const c of stepwiseCols) maxIdxNeeded = Math.max(maxIdxNeeded, c.idx);
   for (const c of globalCols) maxIdxNeeded = Math.max(maxIdxNeeded, c.idx);
+  for (const c of pvalCols) maxIdxNeeded = Math.max(maxIdxNeeded, c.idx);
+  for (const c of fdrCols) maxIdxNeeded = Math.max(maxIdxNeeded, c.idx);
 
   return {
     pepCol,
@@ -456,6 +516,8 @@ function planHeader(headerLine: string): HeaderPlan | null {
     rpmCols,
     stepwiseCols,
     globalCols,
+    pvalCols,
+    fdrCols,
     matrixRoundNames,
     countRounds: countCols.map((c) => c.round),
     topSortColumnName,
@@ -471,6 +533,7 @@ interface RowSinkState {
   topRows: TopRow[];
   countsByRound: Record<string, number[]>;
   totalsByRound: Record<string, number>;
+  nByRound: Record<string, number>;
 }
 
 function consumeRow(line: string, plan: HeaderPlan, sink: RowSinkState): void {
@@ -495,13 +558,24 @@ function consumeRow(line: string, plan: HeaderPlan, sink: RowSinkState): void {
     return line.slice(s, e - 1);
   };
 
-  // (1) per-round counts — always tallied so the rank-abundance / count-
-  // histogram cover the full library, not just the head.
+  // (1) per-round counts — totals + distinct-peptide counts are tracked
+  // exactly; the count arrays themselves are reservoir-sampled (Algorithm R)
+  // when the library exceeds COUNTS_CAP_PER_ROUND. This keeps memory bounded
+  // and downstream sort/iterate fast without changing what the rank-abundance
+  // + count-histogram visualizations show (they're already binned/log-spaced).
   for (const { round, idx } of plan.countCols) {
     const v = Number(cell(idx));
     if (Number.isFinite(v) && v > 0) {
-      sink.countsByRound[round]!.push(v);
       sink.totalsByRound[round]! += v;
+      const seen = sink.nByRound[round]! + 1;
+      sink.nByRound[round] = seen;
+      const arr = sink.countsByRound[round]!;
+      if (arr.length < COUNTS_CAP_PER_ROUND) {
+        arr.push(v);
+      } else {
+        const j = Math.floor(Math.random() * seen);
+        if (j < COUNTS_CAP_PER_ROUND) arr[j] = v;
+      }
     }
   }
 
@@ -515,6 +589,8 @@ function consumeRow(line: string, plan: HeaderPlan, sink: RowSinkState): void {
       rpm: {},
       stepwise: {},
       global: {},
+      pval: {},
+      fdr: {},
     };
     for (const c of plan.countCols) rec.count[c.round] = Number(cell(c.idx));
     for (const c of plan.rpmCols) rec.rpm[c.round] = Number(cell(c.idx));
@@ -525,6 +601,14 @@ function consumeRow(line: string, plan: HeaderPlan, sink: RowSinkState): void {
     for (const c of plan.globalCols) {
       const v = cell(c.idx);
       if (v !== "") rec.global[c.dest] = Number(v);
+    }
+    for (const c of plan.pvalCols) {
+      const v = cell(c.idx);
+      if (v !== "") rec.pval[c.dest] = Number(v);
+    }
+    for (const c of plan.fdrCols) {
+      const v = cell(c.idx);
+      if (v !== "") rec.fdr[c.dest] = Number(v);
     }
     sink.matrixRows.push(rec);
   }
