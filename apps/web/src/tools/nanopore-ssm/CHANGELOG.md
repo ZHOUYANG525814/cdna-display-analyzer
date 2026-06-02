@@ -9,6 +9,60 @@ Date format: `YYYY-MM-DD`.
 
 ---
 
+## 2026-06-02 — Phase 6.16 — σ² column for ML weights; drop redundant columns
+
+User-driven schema change to support downstream machine-learning workflows
+(e.g. ESM-2 PLM embedding → regression with inverse-variance weights).
+Same set of changes applied to both per-site and haplotype CSVs.
+
+### Added: σ² of the WT-anchored fitness
+
+  - `Var_Fitness_<r>` — four-term Poisson δ-method variance of
+    `Fitness_vs_WT_<r>`:
+
+    ```
+    Var_Fitness = (1/ln 2)² × [ 1/(Count_v_<r> + 1) + 1/(wt_<r> + 1)
+                              + 1/(Count_v_<first> + 1) + 1/(wt_<first> + 1) ]
+    ```
+
+    Mathematically identical to `Z_Fitness × √Var_Fitness = Fitness_vs_WT`
+    (same σ² already used internally to compute Z). Exposed as a column so
+    downstream ML can weight rows by `1 / Var_Fitness` directly.
+
+### Removed: `Enrich_Global_<r>` and `NegLog10Pval_Fitness_<r>`
+
+  - `Enrich_Global_<r>` (the raw RPM-based log₂ fold-change) recoverable as
+    `log₂((RPM_<r>+1)/(RPM_<first>+1))`. For Nanopore selections where the
+    WT codon is identifiable, `Fitness_vs_WT_<r>` and `Centered_Fitness_<r>`
+    are the preferred normalizations anyway (the WT denominator cancels
+    per-round library-size shifts directly).
+  - `NegLog10Pval_Fitness_<r>` is `−log₁₀(Pval_Fitness_<r>)` — one column
+    away from any consumer that needs it for volcano-plot Y-axes.
+  - Net CSV width: same number of stat columns per non-first round
+    (Z / Pval / FDR_q / Var instead of Z / Pval / NegLog10Pval / FDR_q),
+    plus one fewer fold-change column (Centered_Fitness only — raw
+    Fitness_vs_WT kept since it's tier-2 in our 3-tier hierarchy).
+
+### Sort key
+
+Switched from `Fitness_vs_WT_<lastRound>` to `Centered_Fitness_<lastRound>`.
+Same ordering by construction (centering subtracts a constant per
+(site, round)) — anchored on the column users see in the CSV.
+
+### Methods doc + MethodsCard
+
+  - `Var_Fitness` ColumnDoc added with the four-term formula and the
+    Poisson-δ-method derivation.
+  - New `mlRecipe` section explicitly names (X, y, weight) =
+    (Variant_AA + neighbouring context → ESM-2,
+     Centered_Fitness_<lastRound>,
+     1 / Var_Fitness_<lastRound>). Pandas snippet included.
+  - Caveats updated to document the removals and the fully-degenerate-
+    library caveat (when there is no biological WT, `Fitness_vs_WT`
+    should NOT be used — fall back to RPM normalization).
+
+---
+
 ## 2026-06-02 — Phase 6.15.1 — Follow-up: matrix + counts caps lowered
 
 The Phase 6.15 changes moved CSV parsing into the worker but the Results

@@ -46,6 +46,21 @@ export interface MethodsDocument {
   centeringMethod: string;
   /** Grouped column documentation. */
   sections: { title: string; columns: ColumnDoc[] }[];
+  /** Recommended (X, y, weight) triple for downstream ML / PLM workflows.
+   *  Rendered as a dedicated section in both the text summary and the
+   *  MethodsCard. Optional — older tools without an ML story can omit it. */
+  mlRecipe?: {
+    /** Plain-English summary of how to feed this CSV to a model. */
+    description: string;
+    /** Input column for a transformer / PLM. */
+    inputColumn: string;
+    /** Regression / classification target. */
+    targetColumn: string;
+    /** Sample-weight column. */
+    weightExpr: string;
+    /** Optional pandas one-liner to lift the (X, y, w) triple. */
+    snippet?: string;
+  };
   /** Method-level caveats every user should see. */
   caveats: string[];
 }
@@ -122,60 +137,41 @@ export const CDNA_METHODS: MethodsDocument = {
           ],
         },
         {
-          name: "Enrich_Global_<r>_vs_<first>",
-          summary:
-            "log2 fold-change vs the first round (the input library). The headline enrichment number.",
-          formula: "Enrich_Global = log₂((RPM_<r> + 1) / (RPM_<first> + 1))",
-          notes: [
-            "This column is the CSV's primary sort key. Top rows = most enriched at the final round.",
-            "Positive values = enriching; negative = depleting; ~0 = neutral / sampling noise.",
-          ],
-        },
-        {
           name: "Centered_Enrich_<r>_vs_<first>",
           summary:
-            "Library-median-centered enrichment. Corrects systematic library-wide drift (e.g., sequencing-depth differences between rounds).",
+            "Library-median-centered log₂ fold-change vs the first round — the canonical fold-change column and the CSV's primary sort key. Corrects systematic library-wide drift (sequencing depth, PCR yield, etc.).",
           formula:
-            "Centered_Enrich = Enrich_Global − median(Enrich_Global across all variants at round <r>)",
+            "Centered_Enrich = log₂((RPM_<r> + 1)/(RPM_<first> + 1))  −  median(that quantity across all variants at round <r>)",
           notes: [
             "Median (not mean) so a small number of strong hits doesn't pull the offset and falsely flatten them.",
-            "CAVEAT: under stringent selection where most variants drop out, the library median itself is strongly negative — Centered_Enrich over-corrects and makes everything look enriched.",
-            "Check the library median in run_stats.json → library_median_enrich. If any value is more negative than ~−1, treat Centered_Enrich with skepticism for that round.",
+            "Raw (un-centered) log₂ fold-change is recoverable as `Centered_Enrich + libraryMedian` (the per-round median is reported above).",
+            "CAVEAT: under stringent selection where most variants drop out, the library median itself is strongly negative — Centered_Enrich over-corrects and makes everything look enriched. Treat with skepticism when the median is < −1 (flagged with ⚠ in the diagnostic above).",
           ],
         },
       ],
     },
     {
-      title: "Statistical inference (Z / p-value / FDR)",
+      title: "Statistical inference (Z / p-value / FDR / Var)",
       columns: [
         {
           name: "Z_Enrich_<r>_vs_<first>",
           summary:
-            "Z-statistic — how many standard errors the log2 fold-change is from zero.",
+            "Z-statistic — how many standard errors the log₂ fold-change is from zero.",
           formula:
-            "Z = Enrich_Global / SE,  where  SE = (1/ln 2) · √[ 1/(Count_<r> + 1) + 1/(Count_<first> + 1) ]",
+            "Z = log₂FC / SE,  where  SE = (1/ln 2) · √[ 1/(Count_<r> + 1) + 1/(Count_<first> + 1) ]",
           notes: [
-            "Poisson delta-method SE. Anti-conservative for counts below ~5; pseudocount mitigates but doesn't fully fix.",
-            "SE is not emitted as a separate column — derivable on demand as `Enrich_Global / Z`.",
+            "Poisson delta-method SE; the underlying log₂ fold-change is the raw (un-centered) quantity. Centering shifts the mean but not the SE, so Z is the same regardless of whether you read Centered_Enrich or the raw fold-change.",
+            "Anti-conservative for counts below ~5; pseudocount mitigates but doesn't fully fix.",
             "Rule of thumb: |Z| > 2 → suggestive; |Z| > 3 → confidence; |Z| > 5 → strong (modulo multiple testing — use FDR_q).",
           ],
         },
         {
           name: "Pval_Enrich_<r>_vs_<first>",
-          summary: "Two-sided z-test p-value under the null hypothesis Enrich_Global = 0.",
+          summary: "Two-sided z-test p-value under the null hypothesis log₂FC = 0.",
           formula: "P = 2 · (1 − Φ(|Z|)),  Φ = standard normal CDF",
           notes: [
             "Two-sided because the test is \"is the variant changing\", not \"is it specifically enriching\".",
-            "For a one-sided enrichment-only test, see the Volcano plot panel (Fisher's exact right-tail).",
-          ],
-        },
-        {
-          name: "NegLog10Pval_Enrich_<r>_vs_<first>",
-          summary: "−log₁₀ of the raw p-value. Useful for volcano-plot Y-axis and quick significance scoring.",
-          formula: "NegLog10Pval = −log₁₀(Pval)",
-          notes: [
-            "1.30 ↔ p = 0.05;  2.00 ↔ p = 0.01;  3.00 ↔ p = 0.001.",
-            "Clamped at 300 to avoid +∞ from double-precision underflow on extremely small p-values.",
+            "−log₁₀(P) is one CSV column away from any consumer who needs it (volcano-plot Y-axis); we no longer emit it as a separate column.",
           ],
         },
         {
@@ -190,13 +186,42 @@ export const CDNA_METHODS: MethodsDocument = {
             "FDR controls the *expected fraction* of false positives among called hits. With 100 hits at q<0.05, expect ≤ 5 to be false discoveries.",
           ],
         },
+        {
+          name: "Var_Enrich_<r>_vs_<first>",
+          summary:
+            "σ² of the log₂ fold-change (Poisson δ-method). Use 1/Var as the per-row inverse-variance weight for downstream ML training.",
+          formula:
+            "Var_Enrich = (1/ln 2)² · [ 1/(Count_<r> + 1) + 1/(Count_<first> + 1) ]",
+          notes: [
+            "Two-term form (cDNA): only the variant's own counts contribute Poisson variance. The library total `passed_qc_<r>` is treated as fixed (millions of reads, sampling variance negligible), so it does not appear in σ².",
+            "Mathematically: Var_Enrich = SE²  ⇔  Z = log₂FC / √Var_Enrich. The same σ² is used internally to derive Z.",
+            "For ML: `weight = 1 / Var_Enrich`. Variants with rare counts get small weights automatically — their fold-change estimate has high σ², so the model trusts them less.",
+          ],
+        },
       ],
     },
   ],
+  mlRecipe: {
+    description:
+      "This CSV is shaped to feed a transformer-based protein language model (ESM-2, ProtBERT) for downstream variant-effect prediction. The (X, y, weight) triple below is the canonical regression setup.",
+    inputColumn: "Peptide_Seq — feed through ESM-2; mean-pool the L × 1280 residue embedding to one vector per peptide (or use per-residue for sequence-output heads).",
+    targetColumn:
+      "Centered_Enrich_<lastRound>_vs_<firstRound> — already corrected for systematic library shift, roughly symmetric around 0.",
+    weightExpr:
+      "1 / Var_Enrich_<lastRound>_vs_<firstRound> — inverse-variance weighting; rare variants are automatically down-weighted.",
+    snippet:
+      'df = pd.read_csv("Master_Enrichment_Matrix.csv")\n' +
+      'df = df[df.Count_<firstRound> >= 5]              # confidence filter\n' +
+      'y = df["Centered_Enrich_<lastRound>_vs_<firstRound>"]\n' +
+      'w = 1.0 / df["Var_Enrich_<lastRound>_vs_<firstRound>"]\n' +
+      "X = esm2.embed(df.Peptide_Seq.tolist()).mean(dim=1)  # → (N, 1280)\n" +
+      "model.fit(X, y, sample_weight=w)",
+  },
   caveats: [
-    "Pseudocount = 1.0 in every log2-based column. Enrich2 / DiMSum use 0.5; the choice affects very-low-count variants. We picked 1.0 for self-consistency with the existing Enrich_* columns.",
+    "Pseudocount = 1.0 in every log2-based column. Enrich2 / DiMSum use 0.5; the choice affects very-low-count variants. We picked 1.0 for self-consistency.",
     "All Z / p-values are Wald-type (score / SE) from a Poisson delta-method. The Wald approximation is anti-conservative at very low counts. For publication-grade extremes, a Fisher's exact CI or beta-binomial test would be more rigorous; we can add either later.",
-    "Centered_Enrich assumes \"most variants are neutral\". When stringent selection eliminates most variants, the library median is shifted away from zero and the centered score over-corrects. Library median is reported in run_stats.json so users can detect this regime.",
+    "Centered_Enrich assumes \"most variants are neutral\". When stringent selection eliminates most variants, the library median is shifted away from zero and the centered score over-corrects. Library median is reported above so users can detect this regime.",
+    "Enrich_Global (the raw, un-centered log₂ fold-change) was emitted as a separate column in earlier versions but is now derivable as `Centered_Enrich + libraryMedian`. NegLog10Pval was likewise dropped — `−log₁₀(Pval)` is one column away. Both removals make room for Var_Enrich without growing CSV width.",
     "FDR and rank are computed across the *full library* at each round, not just over the rows in the CSV. (The analyzer always processes every observed peptide.)",
   ],
 };
@@ -267,39 +292,33 @@ export const NANOPORE_METHODS: MethodsDocument = {
       title: "Enrichment and fitness",
       columns: [
         {
-          name: "Enrich_Global_<r>",
-          summary:
-            "Tier-1 score: log2 fold-change of RPM vs round 0. Intuitive but doesn't use the WT counter.",
-          formula: "Enrich_Global = log₂((RPM_<r> + 1) / (RPM_<first> + 1))",
-        },
-        {
           name: "Fitness_vs_WT_<r>",
           summary:
-            "Tier-2 score: log2 WT-anchored fitness. The Enrich2 L_v formula. Compares the variant's frequency relative to WT in each round.",
+            "WT-anchored log₂ fitness — the Enrich2 L_v formula. Compares the variant's frequency relative to WT in each round.",
           formula:
             "Fitness_vs_WT = log₂[ (Count_v_<r> + 1) / (wt_<r> + 1) ]  −  log₂[ (Count_v_<first> + 1) / (wt_<first> + 1) ]",
           notes: [
             "wt_<r> = number of reads at this site whose ROI exactly matches the reference WT in round <r> (separate counter, see run_stats.json → rounds.<r>.sites.<siteName>.wt_count).",
             "Positive = variant outgrows WT; negative = variant is selected against relative to WT; ~0 = variant tracks WT.",
-            "Preferred over Enrich_Global because it cancels per-round library-size effects directly via the WT denominator.",
+            "WT-anchoring cancels per-round library-size effects directly via the WT denominator. Works best when the WT codon is the dominant variant in the input (typically > 10% of reads); for fully degenerate libraries (e.g. NNN at every variable position) the WT denominator is small + noisy and `Fitness_vs_WT` becomes unreliable.",
           ],
         },
         {
           name: "Centered_Fitness_<r>",
           summary:
-            "Tier-3 score: library-median-centered fitness. Corrects any residual library-wide shift not absorbed by WT normalization.",
+            "Library-median-centered fitness — the canonical fitness column and CSV's primary sort key. Corrects any residual library-wide shift not absorbed by WT normalization.",
           formula:
             "Centered_Fitness = Fitness_vs_WT − median(Fitness_vs_WT across all variants at this (site, round))",
           notes: [
             "Per-(site, round) median because sites are independent experiments.",
-            "Same dropout caveat as cDNA: under stringent selection, median may be strongly negative.",
-            "Library median per (site, round) is exposed on the analyzer result as libraryMedianFitness.",
+            "Same dropout caveat as cDNA: under stringent selection, median may be strongly negative — then Centered_Fitness over-corrects.",
+            "Library median per (site, round) is exposed above and on the analyzer result as libraryMedianFitness.",
           ],
         },
       ],
     },
     {
-      title: "Statistical inference",
+      title: "Statistical inference (Z / p-value / FDR / Var)",
       columns: [
         {
           name: "Z_Fitness_<r>",
@@ -318,10 +337,6 @@ export const NANOPORE_METHODS: MethodsDocument = {
           formula: "P = 2 · (1 − Φ(|Z|))",
         },
         {
-          name: "NegLog10Pval_Fitness_<r>",
-          summary: "−log₁₀ of the raw p-value for volcano-style rendering. Clamped at 300.",
-        },
-        {
           name: "FDR_q_<r>",
           summary:
             "Benjamini-Hochberg adjusted q-value, computed per (site, round). The standard hit-calling threshold is q < 0.05.",
@@ -329,14 +344,44 @@ export const NANOPORE_METHODS: MethodsDocument = {
             "Site-scoped: each site's variants form their own multiple-testing family. q for site_1 isn't affected by p-values at site_2.",
           ],
         },
+        {
+          name: "Var_Fitness_<r>",
+          summary:
+            "σ² of Fitness_vs_WT (four-term Poisson δ-method). Use 1/Var as the per-row inverse-variance weight for downstream ML training.",
+          formula:
+            "Var_Fitness = (1/ln 2)² · [ 1/(Count_v_<r> + 1) + 1/(wt_<r> + 1) + 1/(Count_v_<first> + 1) + 1/(wt_<first> + 1) ]",
+          notes: [
+            "Four-term form: unlike cDNA, the denominator (WT count) is itself a small Poisson quantity, so its variance contributes to σ² explicitly.",
+            "Mathematically: Var_Fitness = SE²  ⇔  Z = Fitness_vs_WT / √Var_Fitness. Same σ² is used internally to derive Z.",
+            "For ML: `weight = 1 / Var_Fitness`. Variants at sites with a weak WT counter automatically get smaller weights — the model is less confident in their fitness estimates.",
+          ],
+        },
       ],
     },
   ],
+  mlRecipe: {
+    description:
+      "Per-site CSV is shaped to feed a transformer-based PLM (ESM-2, ProtBERT) for SSM fitness prediction. The (X, y, weight) triple below is the canonical regression setup.",
+    inputColumn:
+      "Variant_AA (joined with neighbouring site context if multi-site) — feed through ESM-2; per-residue embedding for SSM-specific heatmaps, or mean-pool for whole-protein fitness.",
+    targetColumn:
+      "Centered_Fitness_<lastRound> — corrected for systematic shift; per-site centering keeps each SSM site comparable.",
+    weightExpr:
+      "1 / Var_Fitness_<lastRound> — inverse-variance weighting; variants at sites with weak WT counters are automatically down-weighted.",
+    snippet:
+      'df = pd.read_csv("enrichment_per_site.csv")\n' +
+      'df = df[df["Count_<firstRound>"] >= 5]            # confidence filter\n' +
+      'y = df["Centered_Fitness_<lastRound>"]\n' +
+      'w = 1.0 / df["Var_Fitness_<lastRound>"]\n' +
+      "# Build (site, variant) → sequence string for ESM-2 input externally;\n" +
+      "# then mean- or per-residue-pool the L × 1280 embedding before regression.",
+  },
   caveats: [
     "Pseudocount = 1.0 in every log2-based column. Enrich2 uses 0.5; the choice mainly affects very-low-count variants.",
     "Wald-type Z is anti-conservative at any count < ~5. The pseudocount mitigates but does not eliminate this. For variants with Count_<first> < 5, treat the FDR as a lower bound on the true significance level.",
     "Banded anchor matching tolerates up to maxAnchorSubs substitutions + maxAnchorIndels indels per anchor (defaults: 2 + 1). Variants that fail this tolerance are dropped from the counter entirely, not counted as zero — so a variant absent from the CSV could be either truly absent or repeatedly anchor-failed.",
-    "WT counter assumes the reference ROI string is what truly counts as WT in your library. If your library has a synonymous-codon WT (e.g., GCT and GCG both encoding the WT Ala), only the reference-matching codon feeds wt_<r>; you may want to verify wt_count_<r> is large enough (≥ 100 typically) for the WT-anchored fitness to be stable.",
+    "WT counter assumes the reference ROI string is what truly counts as WT in your library. For fully degenerate libraries (e.g. NNN positions), there is no biological WT and `Fitness_vs_WT` should NOT be used — fall back to the cDNA-style RPM normalization on the underlying counts.",
+    "Enrich_Global_<r> and NegLog10Pval_Fitness_<r> columns were dropped in Phase 6.16 to make room for Var_Fitness without growing CSV width. Enrich_Global is recoverable as `log₂((RPM_<r>+1)/(RPM_<first>+1))`; NegLog10Pval is `−log₁₀(Pval_Fitness)`.",
   ],
 };
 
@@ -436,6 +481,25 @@ export function formatMethodsAsText(
       }
       lines.push("");
     }
+  }
+
+  // --- ML recipe ----------------------------------------------------------
+  if (doc.mlRecipe) {
+    lines.push("--- Using this CSV for machine learning ---");
+    lines.push("");
+    lines.push(`  ${doc.mlRecipe.description}`);
+    lines.push("");
+    lines.push(`  Input (X):   ${doc.mlRecipe.inputColumn}`);
+    lines.push(`  Target (y):  ${doc.mlRecipe.targetColumn}`);
+    lines.push(`  Weight (w):  ${doc.mlRecipe.weightExpr}`);
+    if (doc.mlRecipe.snippet) {
+      lines.push("");
+      lines.push("  Example (pandas + ESM-2):");
+      for (const line of doc.mlRecipe.snippet.split("\n")) {
+        lines.push(`    ${line}`);
+      }
+    }
+    lines.push("");
   }
 
   // --- Caveats ------------------------------------------------------------

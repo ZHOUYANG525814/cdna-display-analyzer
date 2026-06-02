@@ -95,6 +95,7 @@ export function MethodsCard({
           {doc.sections.map((section) => (
             <Section key={section.title} title={section.title} columns={section.columns} />
           ))}
+          {doc.mlRecipe ? <MLRecipeBlock recipe={doc.mlRecipe} /> : null}
           {doc.caveats.length > 0 ? <CaveatsBlock items={doc.caveats} /> : null}
         </CardContent>
       ) : null}
@@ -252,6 +253,40 @@ function Section({
           </li>
         ))}
       </ul>
+    </div>
+  );
+}
+
+function MLRecipeBlock({
+  recipe,
+}: {
+  recipe: NonNullable<MethodsDocument["mlRecipe"]>;
+}) {
+  return (
+    <div className="rounded-md border border-primary/30 bg-primary/5 p-3">
+      <div className="mb-1.5 text-[11px] font-semibold uppercase tracking-wider text-primary">
+        Using this CSV for machine learning
+      </div>
+      <p className="mb-2 text-[11px] text-foreground/90">{recipe.description}</p>
+      <dl className="mb-2 space-y-0.5 text-[11px]">
+        <div className="flex gap-2">
+          <dt className="w-20 shrink-0 text-muted-foreground">Input (X)</dt>
+          <dd className="font-mono text-foreground/90">{recipe.inputColumn}</dd>
+        </div>
+        <div className="flex gap-2">
+          <dt className="w-20 shrink-0 text-muted-foreground">Target (y)</dt>
+          <dd className="font-mono text-foreground/90">{recipe.targetColumn}</dd>
+        </div>
+        <div className="flex gap-2">
+          <dt className="w-20 shrink-0 text-muted-foreground">Weight (w)</dt>
+          <dd className="font-mono text-foreground/90">{recipe.weightExpr}</dd>
+        </div>
+      </dl>
+      {recipe.snippet ? (
+        <pre className="overflow-x-auto rounded-sm bg-muted/60 px-2 py-1.5 font-mono text-[10px] leading-relaxed text-foreground">
+          {recipe.snippet}
+        </pre>
+      ) : null}
     </div>
   );
 }

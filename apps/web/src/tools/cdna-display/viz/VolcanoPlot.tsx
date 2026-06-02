@@ -61,6 +61,13 @@ function buildPanel(
   // into the CSV — surfaced as row.pval[dest] / row.fdr[dest] by the parser.
   // Use those instead of recomputing Fisher's exact on the main thread; the
   // re-run is the volcano's main bottleneck on million-peptide libraries.
+  //
+  // Phase 6.16: X-axis switched from raw `Enrich_Global` (column removed)
+  // to `Centered_Enrich`. Z (and therefore the p-value) is computed off the
+  // raw fold-change, but centering only shifts the mean — the SE is
+  // unchanged — so the volcano's "significant" region (FDR cutoff line) is
+  // identical to before. The X-axis interpretation changes: "shift from the
+  // library median" instead of "raw log₂ fold-change".
   const usePrecomputed =
     src === firstRound &&
     rows.length > 0 &&
@@ -72,9 +79,9 @@ function buildPanel(
   if (usePrecomputed) {
     stats = rows.map((r) => ({
       peptide: r.peptide,
-      // r.global[dest] is the same log₂((RPM+1)/(RPM₀+1)) that the analyzer
-      // uses as the Z-statistic numerator, so it lines up with r.pval[dest].
-      log2FC: r.global[dest] ?? 0,
+      // Centered_Enrich = raw log₂FC − library median. Anchored on the
+      // canonical fold-change column emitted by the analyzer.
+      log2FC: r.centered[dest] ?? 0,
       fdr: r.fdr[dest] ?? 1,
     }));
   } else {
@@ -257,7 +264,7 @@ function VolcanoPanel({ panel }: { panel: Panel }) {
               tickFormatter={(v) => Number(v).toFixed(0)}
               tick={{ fontSize: 10, fill: "hsl(var(--muted-foreground))" }}
               label={{
-                value: "log₂ fold change",
+                value: "Centered log₂ fold change",
                 position: "insideBottom",
                 offset: -14,
                 style: { fontSize: 10, fill: "hsl(var(--muted-foreground))" },

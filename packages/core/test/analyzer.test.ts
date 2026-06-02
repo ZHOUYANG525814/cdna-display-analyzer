@@ -112,8 +112,16 @@ describe("runAnalyzer", () => {
     // be ULP-identical to np.log2).
     expect(r["Enrich_Step_R1_vs_R0"]).toBe(Math.log2((100000 + 1) / (1000 + 1)));
     expect(r["Enrich_Step_R2_vs_R1"]).toBe(Math.log2((0 + 1) / (100000 + 1)));
-    expect(r["Enrich_Global_R1_vs_R0"]).toBe(Math.log2((100000 + 1) / (1000 + 1)));
-    expect(r["Enrich_Global_R2_vs_R0"]).toBe(Math.log2((0 + 1) / (1000 + 1)));
+    // Phase 6.16: Enrich_Global_* removed. The raw log₂ fold-change is the
+    // sum of `Centered_Enrich + libraryMedian`; verify that identity instead.
+    const med1 = out.libraryMedianEnrich["Enrich_Global_R1_vs_R0"]!;
+    const med2 = out.libraryMedianEnrich["Enrich_Global_R2_vs_R0"]!;
+    expect((r["Centered_Enrich_R1_vs_R0"] as number) + med1).toBe(
+      Math.log2((100000 + 1) / (1000 + 1)),
+    );
+    expect((r["Centered_Enrich_R2_vs_R0"] as number) + med2).toBe(
+      Math.log2((0 + 1) / (1000 + 1)),
+    );
   });
 
   it("a peptide present in every round has Count_<r> > 0 in every round", () => {
@@ -205,8 +213,8 @@ describe("CSV serialization (pandas parity)", () => {
   });
 });
 
-describe("runAnalyzer — Phase 6.12 new columns", () => {
-  it("emits Centered_Enrich, Z, Pval, NegLog10Pval, FDR_q for non-first rounds", () => {
+describe("runAnalyzer — Phase 6.12 + 6.16 column set", () => {
+  it("emits Centered_Enrich, Z, Pval, FDR_q, Var_Enrich for non-first rounds", () => {
     // Two-round setup: one variant with the same RPM in both rounds (neutral),
     // one with 10x growth (strong enricher). Library size = 2 → median centering
     // is trivially defined; the centered values should bracket zero.
@@ -229,16 +237,19 @@ describe("runAnalyzer — Phase 6.12 new columns", () => {
     })!;
     const csv = out.csvParts.join("");
     const header = csv.split("\n")[0]!;
-    // New columns expected by name; Rank/GC/Present_In_All gone.
+    // Phase 6.12 removals: Rank / GC_Percent / Present_In_All.
     expect(header).not.toContain("Rank_");
     expect(header).not.toContain("GC_Percent");
     expect(header).not.toContain("Present_In_All");
-    expect(header).toContain("Enrich_Global_R1_vs_R0");
+    // Phase 6.16 removals: Enrich_Global / NegLog10Pval.
+    expect(header).not.toContain("Enrich_Global_");
+    expect(header).not.toContain("NegLog10Pval_");
+    // Kept + new columns.
     expect(header).toContain("Centered_Enrich_R1_vs_R0");
     expect(header).toContain("Z_Enrich_R1_vs_R0");
     expect(header).toContain("Pval_Enrich_R1_vs_R0");
-    expect(header).toContain("NegLog10Pval_Enrich_R1_vs_R0");
     expect(header).toContain("FDR_q_R1_vs_R0");
+    expect(header).toContain("Var_Enrich_R1_vs_R0");
 
     // The strong enricher row should have a much larger Z than the neutral row.
     const enricher = out.rows.find((r) => r.Peptide_Seq === "P");  // CCC = Pro
@@ -248,8 +259,13 @@ describe("runAnalyzer — Phase 6.12 new columns", () => {
     expect(Math.abs(enricher!["Z_Enrich_R1_vs_R0"] as number)).toBeGreaterThan(
       Math.abs(neutral!["Z_Enrich_R1_vs_R0"] as number),
     );
-    // Library median is reported; for this 2-variant library it's the mean of
-    // ~0 and ~log2(10), so ~1.66. Anything in (0, log2(10)) is fine.
+    // Var_Enrich should be positive and follow the σ² = (1/ln 2)² × (1/(c1+1) + 1/(c2+1)) formula.
+    // For the neutral row (Count_R0 = Count_R1 = 100): σ² = (1/ln2)² × 2/101 ≈ 0.0412.
+    const expectedVar = (1 / Math.LN2) ** 2 * (1 / 101 + 1 / 101);
+    expect(neutral!["Var_Enrich_R1_vs_R0"] as number).toBeCloseTo(expectedVar, 10);
+    // Library median diagnostic key is kept as "Enrich_Global_*" (describes
+    // the underlying log₂ fold-change quantity even though we no longer emit
+    // it as a column).
     const med = out.libraryMedianEnrich["Enrich_Global_R1_vs_R0"]!;
     expect(med).toBeGreaterThan(0);
     expect(med).toBeLessThan(Math.log2(10));

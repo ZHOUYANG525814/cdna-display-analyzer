@@ -71,13 +71,15 @@ function buildPanel(
   rows: ReadonlyArray<PeptideRecord>,
   srcRound: string,
   destRound: string,
-  enrichKey: "stepwise" | "global",
+  enrichKey: "stepwise" | "centered",
 ): Panel {
   const sub = subsample([...rows], destRound);
   const points: ScatterPoint[] = sub
     .map((r, idx) => {
       const xRaw = r.rpm[srcRound] ?? 0;
       const yRaw = r.rpm[destRound] ?? 0;
+      // Phase 6.16: "global" mode now reads `Centered_Enrich_<dest>_vs_<first>`
+      // (the canonical fold-change column post-removal of Enrich_Global).
       const enrich = r[enrichKey][destRound];
       return {
         x: Math.log10(xRaw + 1),
@@ -91,7 +93,10 @@ function buildPanel(
     .filter((p) => p.x > 0 || p.y > 0);
 
   return {
-    title: enrichKey === "global" ? `Global enrichment · ${destRound} vs ${srcRound}` : `Stepwise · ${destRound} vs ${srcRound}`,
+    title:
+      enrichKey === "centered"
+        ? `Centered enrichment · ${destRound} vs ${srcRound}`
+        : `Stepwise · ${destRound} vs ${srcRound}`,
     xLabel: `log₁₀(RPM + 1) · ${srcRound}`,
     yLabel: `log₁₀(RPM + 1) · ${destRound}`,
     points,
@@ -117,7 +122,7 @@ export function EnrichmentScatter({ rows, roundNames }: Props) {
     // it's the same as the only stepwise comparison).
     if (roundNames.length >= 3) {
       out.push(
-        buildPanel(rows, roundNames[0]!, roundNames[roundNames.length - 1]!, "global"),
+        buildPanel(rows, roundNames[0]!, roundNames[roundNames.length - 1]!, "centered"),
       );
     }
     return out;

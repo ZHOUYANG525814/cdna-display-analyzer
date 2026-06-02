@@ -15,9 +15,9 @@ import type { RoundStats } from "./demultiplex.js";
 import {
   benjaminiHochberg,
   median,
-  negLog10P,
   seLog2Ratio,
   twoSidedPvalue,
+  varLog2Ratio,
 } from "./stats.js";
 
 export interface AnalyzerInput {
@@ -34,20 +34,26 @@ export interface AnalyzerRow {
   Peptide_Seq: string;
   Dominant_DNA_Seq: string;
   [key: string]: RowValue;
-  // Count_*, RPM_*, Enrich_Step_*, Enrich_Global_*,
-  // Centered_Enrich_*, Z_Enrich_*, Pval_Enrich_*, NegLog10Pval_Enrich_*, FDR_q_*
-  // (Rank_*, GC_Percent, Present_In_All were dropped in Phase 6.12 — strictly
-  // derivable from the kept columns, not worth the CSV width.)
+  // Count_*, RPM_*, Enrich_Step_*, Centered_Enrich_*,
+  // Z_Enrich_*, Pval_Enrich_*, FDR_q_*, Var_Enrich_*
+  // (Rank_*, GC_Percent, Present_In_All dropped in Phase 6.12.
+  //  Enrich_Global_* and NegLog10Pval_* dropped in Phase 6.16:
+  //   - Enrich_Global is recoverable as `Centered_Enrich + libraryMedian`
+  //   - NegLog10Pval is trivially `−log10(Pval)`
+  //   Both were removable to make room for Var_Enrich without growing the CSV.)
 }
 
 export interface AnalyzerOutput {
   rows: AnalyzerRow[];
   columns: ReadonlyArray<ColumnSpec>;
-  /** Library-wide median of `Enrich_Global_<r>` for each non-first round.
-   *  Exposed on the result so the pipeline can surface it in `run_stats.json`
-   *  — non-zero values flag systematic shifts (sequencing-depth or PCR-yield
-   *  artifacts vs real global enrichment). Keyed by the Enrich_Global column
-   *  name (e.g. "Enrich_Global_Round_3_vs_Round_0"). */
+  /** Library-wide median of the raw `log₂((RPM_<r>+1)/(RPM_<first>+1))` for
+   *  each non-first round — the centering offset that produces Centered_Enrich.
+   *  Exposed so the Methods card / run_stats.json can flag rounds where the
+   *  median sits far from zero (which signals a stringent-selection regime
+   *  where Centered_Enrich over-corrects). Keys are diagnostic labels of the
+   *  form "Enrich_Global_<curr>_vs_<first>" — they refer to the underlying
+   *  fold-change quantity even though the column itself is no longer emitted
+   *  (Phase 6.16). */
   libraryMedianEnrich: Record<string, number>;
   /** CSV emitted as one string per line, each entry already terminated with
    *  "\n". Splitting the output avoids materializing the entire CSV as one
@@ -83,21 +89,17 @@ export function buildColumnSpecs(roundNames: ReadonlyArray<string>): ColumnSpec[
   }
   const first = roundNames[0];
   if (first !== undefined) {
-    // Tier-1 score: log2 fold-change vs round 0.
-    for (let i = 1; i < roundNames.length; i++) {
-      const curr = roundNames[i];
-      cols.push({ name: `Enrich_Global_${curr}_vs_${first}`, type: "float" });
-    }
-    // Tier-3 score: tier-1 minus library median (CLR-style centering).
+    // Centered_Enrich is now the canonical fold-change column (Phase 6.16).
+    // Raw Enrich_Global is recoverable as `Centered_Enrich + libraryMedian`,
+    // and the library median is surfaced in run_stats.json + MethodsCard.
     for (let i = 1; i < roundNames.length; i++) {
       const curr = roundNames[i];
       cols.push({ name: `Centered_Enrich_${curr}_vs_${first}`, type: "float" });
     }
-    // Z = score / SE, p-value, −log10(p), and BH-FDR q-value per round.
-    // Anchored on Enrich_Global (the existing tier-1 fold-change) so users
-    // who already trust that column have a consistent set of inference
-    // numbers next to it. (We do NOT emit SE explicitly — it's derivable
-    // as Enrich_Global / Z.)
+    // Inference triple (Z / Pval / FDR_q) computed against the raw log2 fold-
+    // change (centering shifts the mean but not the SE, so Z is the same
+    // either way). NegLog10Pval dropped — `−log10(Pval)` is one CSV column
+    // away from any consumer who needs it.
     for (let i = 1; i < roundNames.length; i++) {
       const curr = roundNames[i];
       cols.push({ name: `Z_Enrich_${curr}_vs_${first}`, type: "float" });
@@ -108,17 +110,20 @@ export function buildColumnSpecs(roundNames: ReadonlyArray<string>): ColumnSpec[
     }
     for (let i = 1; i < roundNames.length; i++) {
       const curr = roundNames[i];
-      cols.push({ name: `NegLog10Pval_Enrich_${curr}_vs_${first}`, type: "float" });
-    }
-    for (let i = 1; i < roundNames.length; i++) {
-      const curr = roundNames[i];
       cols.push({ name: `FDR_q_${curr}_vs_${first}`, type: "float" });
     }
+    // σ² of the log₂ fold-change (Phase 6.16). Downstream ML uses 1/Var as
+    // the inverse-variance training weight; rows with rare variants get
+    // less weight because their fold-change estimate has larger σ².
+    for (let i = 1; i < roundNames.length; i++) {
+      const curr = roundNames[i];
+      cols.push({ name: `Var_Enrich_${curr}_vs_${first}`, type: "float" });
+    }
   }
-  // Removed in Phase 6.12 (strictly derivable, low utility for CSV width):
-  //   Rank_<r>      — by Count_<r> sort + min-rank
-  //   GC_Percent    — by `calculateGc(Dominant_DNA_Seq)`
-  //   Present_In_All — by all-Counts-nonzero
+  // Removed in Phase 6.12 (strictly derivable):
+  //   Rank_<r> · GC_Percent · Present_In_All
+  // Removed in Phase 6.16 (recoverable from kept columns, freed room for Var):
+  //   Enrich_Global_<r>_vs_<first> · NegLog10Pval_Enrich_<r>_vs_<first>
   return cols;
 }
 
@@ -203,43 +208,48 @@ export function runAnalyzer(input: AnalyzerInput): AnalyzerOutput | null {
   if (first !== undefined) {
     for (let i = 1; i < roundNames.length; i++) {
       const curr = roundNames[i]!;
-      const enrichCol = `Enrich_Global_${curr}_vs_${first}`;
+      // Key kept as `Enrich_Global_<curr>_vs_<first>` for continuity with the
+      // run_stats.json schema + MethodsCard label. The COLUMN by that name is
+      // no longer emitted in the CSV (Phase 6.16); this record describes "the
+      // median of the underlying log₂ fold-change for this round vs first".
+      const medianKey = `Enrich_Global_${curr}_vs_${first}`;
       const centeredCol = `Centered_Enrich_${curr}_vs_${first}`;
       const zCol = `Z_Enrich_${curr}_vs_${first}`;
       const pCol = `Pval_Enrich_${curr}_vs_${first}`;
-      const nl10pCol = `NegLog10Pval_Enrich_${curr}_vs_${first}`;
       const qCol = `FDR_q_${curr}_vs_${first}`;
+      const varCol = `Var_Enrich_${curr}_vs_${first}`;
 
-      // First pass: tier-1 fold change + Z + p + −log10(p).
-      // Tier-3 score (Centered_Enrich) needs the library median across all
-      // variants, which we compute after this pass.
-      const pvals: number[] = [];
-      for (const row of rows) {
+      // First pass: raw log₂ fold-change (held in a scratch array, NOT a
+      // column), Z, Pval, Var. Centered_Enrich needs the library median
+      // across all variants, which we compute after this pass.
+      const rawEnrich: number[] = new Array(rows.length);
+      const pvals: number[] = new Array(rows.length);
+      for (let r = 0; r < rows.length; r++) {
+        const row = rows[r]!;
         const cCurr = row[`Count_${curr}`] as number;
         const cFirst = row[`Count_${first}`] as number;
         const rpmCurr = row[`RPM_${curr}`] as number;
         const rpmFirst = row[`RPM_${first}`] as number;
         const enrich = Math.log2((rpmCurr + PSEUDO) / (rpmFirst + PSEUDO));
+        const variance = varLog2Ratio(cCurr, cFirst, PSEUDO);
         const se = seLog2Ratio(cCurr, cFirst, PSEUDO);
         // SE ≈ 0 implies overwhelming evidence (huge counts). Pick a tiny
         // floor instead of dividing by 0; Z stays large but finite.
         const safeSe = se > 1e-12 ? se : 1e-12;
         const z = enrich / safeSe;
         const p = twoSidedPvalue(z);
-        row[enrichCol] = enrich;
+        rawEnrich[r] = enrich;
         row[zCol] = z;
         row[pCol] = p;
-        row[nl10pCol] = negLog10P(p);
-        pvals.push(p);
+        row[varCol] = variance;
+        pvals[r] = p;
       }
 
-      // Library median of Enrich_Global at this round → centered score.
-      const enrichValues: number[] = [];
-      for (const row of rows) enrichValues.push(row[enrichCol] as number);
-      const medEnrich = median(enrichValues);
-      libraryMedianEnrich[enrichCol] = medEnrich;
-      for (const row of rows) {
-        row[centeredCol] = (row[enrichCol] as number) - medEnrich;
+      // Library median of the raw log₂ fold-change → centered score.
+      const medEnrich = median(rawEnrich);
+      libraryMedianEnrich[medianKey] = medEnrich;
+      for (let r = 0; r < rows.length; r++) {
+        rows[r]![centeredCol] = rawEnrich[r]! - medEnrich;
       }
 
       // BH-FDR across all variants for this round's p-values.
@@ -251,10 +261,11 @@ export function runAnalyzer(input: AnalyzerInput): AnalyzerOutput | null {
   }
 
   // 6. Stable sort by primary enrichment desc, secondary Peptide_Seq asc.
-  //    Mirrors the Python side after the kind='stable' patch.
+  //    Phase 6.16: sort key switched from Enrich_Global (deleted) to
+  //    Centered_Enrich (the surviving canonical fold-change column).
   let sortCol: string;
   if (roundNames.length > 1) {
-    sortCol = `Enrich_Global_${roundNames[roundNames.length - 1]}_vs_${roundNames[0]}`;
+    sortCol = `Centered_Enrich_${roundNames[roundNames.length - 1]}_vs_${roundNames[0]}`;
   } else {
     sortCol = `RPM_${roundNames[0]}`;
   }

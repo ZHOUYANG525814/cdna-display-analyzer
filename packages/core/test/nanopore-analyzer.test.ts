@@ -62,9 +62,8 @@ describe("runNanoporeAnalyzer — single site, single round", () => {
     const trp = out.perSiteRows.find((r) => r.Variant_AA === "W")!;
     expect(ala.Count_R0).toBeGreaterThan(trp.Count_R0 as number);
     expect(trp.Count_R0).toBeGreaterThan(phe.Count_R0 as number);
-    // Enrich_Global vs same round = log2(1) = 0
-    expect(ala.Enrich_Global_R0).toBeCloseTo(0, 9);
-    // Fitness vs WT for the WT row itself = log2(1) = 0
+    // Enrich_Global column removed in Phase 6.16. Fitness_vs_WT for the WT
+    // row itself = log2(1) = 0 by construction (it's its own reference).
     expect(ala.Fitness_vs_WT_R0).toBeCloseTo(0, 9);
     expect(ala.Dominant_DNA).toBe("GCT");
   });
@@ -121,10 +120,13 @@ describe("runNanoporeAnalyzer — two rounds, single site (enrichment math)", ()
     expect(wt.Fitness_vs_WT_R0).toBeCloseTo(0, 9);
     expect(wt.Fitness_vs_WT_R1).toBeCloseTo(0, 9);
 
-    // Enrich_Global_R1 = log2((RPM_R1 + 1) / (RPM_R0 + 1)).
-    // TGG: RPM_R0 = 10/100*1e6 = 100_000; RPM_R1 = 60/100*1e6 = 600_000.
-    const expectedEnrich = Math.log2((600_000 + PSEUDO) / (100_000 + PSEUDO));
-    expect(tgg.Enrich_Global_R1).toBeCloseTo(expectedEnrich, 9);
+    // Phase 6.16: Enrich_Global column removed; sanity is now on Var_Fitness.
+    // Var_Fitness = (1/ln 2)² × [1/(c_v_r+1) + 1/(wt_r+1) + 1/(c_v_0+1) + 1/(wt_0+1)]
+    // For TGG: counts (60, 20, 10, 50) → σ² = (1/ln2)² × (1/61 + 1/21 + 1/11 + 1/51).
+    const INV_LN2 = 1 / Math.LN2;
+    const expectedVar =
+      INV_LN2 * INV_LN2 * (1 / 61 + 1 / 21 + 1 / 11 + 1 / 51);
+    expect(tgg.Var_Fitness_R1).toBeCloseTo(expectedVar, 10);
 
     // Rank_<r> dropped in Phase 6.12. Verify the abundance ordering via Count
     // directly: TGG=60 > GCT=20 at R1.
@@ -256,11 +258,11 @@ describe("runNanoporeAnalyzer — CSV serialization", () => {
 
     // perSiteCsvParts: one "\n"-terminated string per line (header + 2 rows).
     expect(out.perSiteCsvParts.length).toBe(3);
-    // Phase 6.12 schema: Rank_* and GC_Percent dropped; Centered_Fitness,
-    // Z_Fitness, Pval_Fitness, NegLog10Pval_Fitness, FDR_q added for non-
-    // first rounds (here R1 only).
+    // Phase 6.12: Rank_* / GC_Percent dropped.
+    // Phase 6.16: Enrich_Global_* / NegLog10Pval_Fitness_* dropped, Var_Fitness
+    //             added — same net column count as before.
     expect(out.perSiteCsvParts[0]!).toBe(
-      "Site,Variant_AA,Dominant_DNA,Count_R0,Count_R1,RPM_R0,RPM_R1,Enrich_Global_R0,Enrich_Global_R1,Fitness_vs_WT_R0,Fitness_vs_WT_R1,Centered_Fitness_R1,Z_Fitness_R1,Pval_Fitness_R1,NegLog10Pval_Fitness_R1,FDR_q_R1\n",
+      "Site,Variant_AA,Dominant_DNA,Count_R0,Count_R1,RPM_R0,RPM_R1,Fitness_vs_WT_R0,Fitness_vs_WT_R1,Centered_Fitness_R1,Z_Fitness_R1,Pval_Fitness_R1,FDR_q_R1,Var_Fitness_R1\n",
     );
     // Joined view: 2 data rows + 1 header row + trailing newline.
     const joined = out.perSiteCsvParts.join("");

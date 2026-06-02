@@ -81,6 +81,14 @@ export function seLog2Ratio(c1: number, c2: number, pseudo = 1.0): number {
   return INV_LN2 * Math.sqrt(1 / (c1 + pseudo) + 1 / (c2 + pseudo));
 }
 
+/** σ² of `log2((c1 + p) / (c2 + p))` = SE². Exposed as a dedicated function
+ *  because we emit it as a CSV column for ML inverse-variance weighting —
+ *  `weight = 1 / σ²`. Mathematically identical to `seLog2Ratio² ` but skips a
+ *  redundant `Math.sqrt` per row. */
+export function varLog2Ratio(c1: number, c2: number, pseudo = 1.0): number {
+  return INV_LN2 * INV_LN2 * (1 / (c1 + pseudo) + 1 / (c2 + pseudo));
+}
+
 /** Standard error of a four-term log2 ratio (Enrich2's L_v with explicit WT):
  *    L = log2((c_v + p)/(wt + p)) − log2((c_v0 + p)/(wt0 + p))
  *  All four counts contribute Poisson variance. */
@@ -99,6 +107,21 @@ export function seLog2WtRatio(
         1 / (cV0 + pseudo) +
         1 / (wt0 + pseudo),
     )
+  );
+}
+
+/** σ² of the four-term log2 ratio = `seLog2WtRatio²`. ML weight = 1/σ². */
+export function varLog2WtRatio(
+  cV: number,
+  wt: number,
+  cV0: number,
+  wt0: number,
+  pseudo = 1.0,
+): number {
+  return (
+    INV_LN2 *
+    INV_LN2 *
+    (1 / (cV + pseudo) + 1 / (wt + pseudo) + 1 / (cV0 + pseudo) + 1 / (wt0 + pseudo))
   );
 }
 

@@ -17,14 +17,18 @@ export interface PeptideRecord {
   rpm: Record<string, number>;
   /** Enrich_Stepwise_<roundB>_vs_<roundA>, indexed by the destination round. */
   stepwise: Record<string, number>;
-  /** Enrich_Global_<roundN>_vs_<round0>, indexed by the destination round. */
-  global: Record<string, number>;
-  /** Analyzer-side Wald p-value for Enrich_Global_<dest>_vs_<first>, indexed
-   *  by destination round. Lets the volcano render without recomputing
-   *  Fisher's exact on the main thread. Absent rounds default to NaN. */
+  /** Library-median-centered log₂ fold-change (Centered_Enrich_<dest>_vs_<first>).
+   *  This is the canonical fold-change column post-Phase 6.16; the volcano
+   *  plot's X-axis reads from here. */
+  centered: Record<string, number>;
+  /** Analyzer-side Wald p-value (Pval_Enrich_<dest>_vs_<first>). Lets the
+   *  volcano render without recomputing Fisher's exact on the main thread. */
   pval: Record<string, number>;
-  /** Analyzer-side BH-adjusted q-value for FDR_q_<dest>_vs_<first>. */
+  /** Analyzer-side BH-adjusted q-value (FDR_q_<dest>_vs_<first>). */
   fdr: Record<string, number>;
+  /** σ² of the log₂ fold-change (Var_Enrich_<dest>_vs_<first>). Surfaced for
+   *  downstream ML inverse-variance weighting (`weight = 1/Var`). */
+  variance: Record<string, number>;
 }
 
 export interface ParsedMatrix {
@@ -51,7 +55,8 @@ export function parseEnrichmentMatrix(csv: string, limit?: number): ParsedMatrix
   const countCols: { round: string; idx: number }[] = [];
   const rpmCols: { round: string; idx: number }[] = [];
   const stepwiseCols: { dest: string; idx: number }[] = [];
-  const globalCols: { dest: string; idx: number }[] = [];
+  const centeredCols: { dest: string; idx: number }[] = [];
+  const varCols: { dest: string; idx: number }[] = [];
   const roundNamesSet = new Set<string>();
 
   for (let i = 0; i < headers.length; i++) {
@@ -70,11 +75,16 @@ export function parseEnrichmentMatrix(csv: string, limit?: number): ParsedMatrix
       const sepIdx = rest.indexOf("_vs_");
       const dest = sepIdx === -1 ? rest : rest.slice(0, sepIdx);
       stepwiseCols.push({ dest, idx: i });
-    } else if (h.startsWith("Enrich_Global_")) {
-      const rest = h.slice("Enrich_Global_".length);
+    } else if (h.startsWith("Centered_Enrich_")) {
+      const rest = h.slice("Centered_Enrich_".length);
       const sepIdx = rest.indexOf("_vs_");
       const dest = sepIdx === -1 ? rest : rest.slice(0, sepIdx);
-      globalCols.push({ dest, idx: i });
+      centeredCols.push({ dest, idx: i });
+    } else if (h.startsWith("Var_Enrich_")) {
+      const rest = h.slice("Var_Enrich_".length);
+      const sepIdx = rest.indexOf("_vs_");
+      const dest = sepIdx === -1 ? rest : rest.slice(0, sepIdx);
+      varCols.push({ dest, idx: i });
     }
   }
 
@@ -98,9 +108,10 @@ export function parseEnrichmentMatrix(csv: string, limit?: number): ParsedMatrix
       count: {},
       rpm: {},
       stepwise: {},
-      global: {},
+      centered: {},
       pval: {},
       fdr: {},
+      variance: {},
     };
     for (const { round, idx } of countCols) {
       rec.count[round] = Number(cells[idx] ?? "0");
@@ -112,9 +123,13 @@ export function parseEnrichmentMatrix(csv: string, limit?: number): ParsedMatrix
       const v = cells[idx];
       if (v != null && v !== "") rec.stepwise[dest] = Number(v);
     }
-    for (const { dest, idx } of globalCols) {
+    for (const { dest, idx } of centeredCols) {
       const v = cells[idx];
-      if (v != null && v !== "") rec.global[dest] = Number(v);
+      if (v != null && v !== "") rec.centered[dest] = Number(v);
+    }
+    for (const { dest, idx } of varCols) {
+      const v = cells[idx];
+      if (v != null && v !== "") rec.variance[dest] = Number(v);
     }
     rows.push(rec);
     if (lineEnd === -1) break;
@@ -414,13 +429,14 @@ interface HeaderPlan {
   countCols: { round: string; idx: number }[];
   rpmCols: { name: string; round: string; idx: number }[];
   stepwiseCols: { dest: string; idx: number }[];
-  globalCols: { dest: string; idx: number }[];
-  /** Pval_Enrich_<dest>_vs_<first>. Indexed by destination round. Lets the
-   *  volcano use the analyzer's pre-computed p-values instead of recomputing
-   *  Fisher's exact on the main thread. */
+  /** Centered_Enrich_<dest>_vs_<first> — canonical fold-change column. */
+  centeredCols: { dest: string; idx: number }[];
+  /** Pval_Enrich_<dest>_vs_<first>. */
   pvalCols: { dest: string; idx: number }[];
-  /** FDR_q_<dest>_vs_<first>. Same indexing convention as pvalCols. */
+  /** FDR_q_<dest>_vs_<first>. */
   fdrCols: { dest: string; idx: number }[];
+  /** Var_Enrich_<dest>_vs_<first> — σ² for downstream ML weighting. */
+  varCols: { dest: string; idx: number }[];
   matrixRoundNames: string[];
   countRounds: string[];
   // Sort column for the top-N preview.
@@ -445,9 +461,10 @@ function planHeader(headerLine: string): HeaderPlan | null {
   const countCols: HeaderPlan["countCols"] = [];
   const rpmCols: HeaderPlan["rpmCols"] = [];
   const stepwiseCols: HeaderPlan["stepwiseCols"] = [];
-  const globalCols: HeaderPlan["globalCols"] = [];
+  const centeredCols: HeaderPlan["centeredCols"] = [];
   const pvalCols: HeaderPlan["pvalCols"] = [];
   const fdrCols: HeaderPlan["fdrCols"] = [];
+  const varCols: HeaderPlan["varCols"] = [];
   const roundNamesSet = new Set<string>();
 
   for (let i = 0; i < headers.length; i++) {
@@ -464,10 +481,10 @@ function planHeader(headerLine: string): HeaderPlan | null {
       const rest = h.slice("Enrich_Stepwise_".length);
       const sepIdx = rest.indexOf("_vs_");
       stepwiseCols.push({ dest: sepIdx === -1 ? rest : rest.slice(0, sepIdx), idx: i });
-    } else if (h.startsWith("Enrich_Global_")) {
-      const rest = h.slice("Enrich_Global_".length);
+    } else if (h.startsWith("Centered_Enrich_")) {
+      const rest = h.slice("Centered_Enrich_".length);
       const sepIdx = rest.indexOf("_vs_");
-      globalCols.push({ dest: sepIdx === -1 ? rest : rest.slice(0, sepIdx), idx: i });
+      centeredCols.push({ dest: sepIdx === -1 ? rest : rest.slice(0, sepIdx), idx: i });
     } else if (h.startsWith("Pval_Enrich_")) {
       const rest = h.slice("Pval_Enrich_".length);
       const sepIdx = rest.indexOf("_vs_");
@@ -476,20 +493,24 @@ function planHeader(headerLine: string): HeaderPlan | null {
       const rest = h.slice("FDR_q_".length);
       const sepIdx = rest.indexOf("_vs_");
       fdrCols.push({ dest: sepIdx === -1 ? rest : rest.slice(0, sepIdx), idx: i });
+    } else if (h.startsWith("Var_Enrich_")) {
+      const rest = h.slice("Var_Enrich_".length);
+      const sepIdx = rest.indexOf("_vs_");
+      varCols.push({ dest: sepIdx === -1 ? rest : rest.slice(0, sepIdx), idx: i });
     }
   }
 
   const matrixRoundNames = Array.from(roundNamesSet);
 
-  // Sort column for top-N: prefer the last Enrich_Global_*, else the first
-  // RPM column. Same selection as the legacy parseTopPeptides.
+  // Sort column for top-N: prefer the last Centered_Enrich_* (the analyzer's
+  // primary sort key post-Phase 6.16), else fall back to the first RPM
+  // column for single-round runs.
   let topSortColumnName = "";
   let topSortColumnIdx = -1;
-  if (globalCols.length > 0) {
-    // Manual reverse scan keeps lib target unconstrained (Array.findLast is ES2023).
+  if (centeredCols.length > 0) {
     for (let i = headers.length - 1; i >= 0; i--) {
       const h = headers[i]!;
-      if (h.startsWith("Enrich_Global_")) {
+      if (h.startsWith("Centered_Enrich_")) {
         topSortColumnName = h;
         topSortColumnIdx = i;
         break;
@@ -504,9 +525,10 @@ function planHeader(headerLine: string): HeaderPlan | null {
   for (const c of countCols) maxIdxNeeded = Math.max(maxIdxNeeded, c.idx);
   for (const c of rpmCols) maxIdxNeeded = Math.max(maxIdxNeeded, c.idx);
   for (const c of stepwiseCols) maxIdxNeeded = Math.max(maxIdxNeeded, c.idx);
-  for (const c of globalCols) maxIdxNeeded = Math.max(maxIdxNeeded, c.idx);
+  for (const c of centeredCols) maxIdxNeeded = Math.max(maxIdxNeeded, c.idx);
   for (const c of pvalCols) maxIdxNeeded = Math.max(maxIdxNeeded, c.idx);
   for (const c of fdrCols) maxIdxNeeded = Math.max(maxIdxNeeded, c.idx);
+  for (const c of varCols) maxIdxNeeded = Math.max(maxIdxNeeded, c.idx);
 
   return {
     pepCol,
@@ -515,9 +537,10 @@ function planHeader(headerLine: string): HeaderPlan | null {
     countCols,
     rpmCols,
     stepwiseCols,
-    globalCols,
+    centeredCols,
     pvalCols,
     fdrCols,
+    varCols,
     matrixRoundNames,
     countRounds: countCols.map((c) => c.round),
     topSortColumnName,
@@ -588,9 +611,10 @@ function consumeRow(line: string, plan: HeaderPlan, sink: RowSinkState): void {
       count: {},
       rpm: {},
       stepwise: {},
-      global: {},
+      centered: {},
       pval: {},
       fdr: {},
+      variance: {},
     };
     for (const c of plan.countCols) rec.count[c.round] = Number(cell(c.idx));
     for (const c of plan.rpmCols) rec.rpm[c.round] = Number(cell(c.idx));
@@ -598,9 +622,9 @@ function consumeRow(line: string, plan: HeaderPlan, sink: RowSinkState): void {
       const v = cell(c.idx);
       if (v !== "") rec.stepwise[c.dest] = Number(v);
     }
-    for (const c of plan.globalCols) {
+    for (const c of plan.centeredCols) {
       const v = cell(c.idx);
-      if (v !== "") rec.global[c.dest] = Number(v);
+      if (v !== "") rec.centered[c.dest] = Number(v);
     }
     for (const c of plan.pvalCols) {
       const v = cell(c.idx);
@@ -609,6 +633,10 @@ function consumeRow(line: string, plan: HeaderPlan, sink: RowSinkState): void {
     for (const c of plan.fdrCols) {
       const v = cell(c.idx);
       if (v !== "") rec.fdr[c.dest] = Number(v);
+    }
+    for (const c of plan.varCols) {
+      const v = cell(c.idx);
+      if (v !== "") rec.variance[c.dest] = Number(v);
     }
     sink.matrixRows.push(rec);
   }

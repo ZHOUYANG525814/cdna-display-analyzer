@@ -33,9 +33,9 @@ import type { NanoporeRoundStats } from "./nanopore.js";
 import {
   benjaminiHochberg,
   median,
-  negLog10P,
   seLog2WtRatio,
   twoSidedPvalue,
+  varLog2WtRatio,
 } from "./stats.js";
 
 const PSEUDO = 1.0;
@@ -169,7 +169,9 @@ function aggregatePerSite(
   const firstRound = input.roundNames[0]!;
   const lastRound = input.roundNames[input.roundNames.length - 1]!;
 
-  // ---- Pass 1: per-variant counts + per-round Enrich_Global / Fitness_vs_WT.
+  // ---- Pass 1: per-variant counts + per-round Fitness_vs_WT.
+  //   Enrich_Global column removed in Phase 6.16 (recoverable as
+  //   log₂((RPM+1)/(RPM₀+1)) if a consumer ever needs it).
   const rows: NanoporeAnalyzerRow[] = [];
   for (const agg of aaMap.values()) {
     const dominantDna = pickDominant(agg.dnaTotals);
@@ -179,8 +181,6 @@ function aggregatePerSite(
       Dominant_DNA: dominantDna,
     };
     const c0 = agg.perRound.get(firstRound) ?? 0;
-    const denom0 = denom.get(firstRound) ?? 0;
-    const rpm0 = denom0 > 0 ? (c0 / denom0) * 1e6 : 0;
     const wt0 = wtCounts.get(firstRound) ?? 0;
     for (const round of input.roundNames) {
       const c = agg.perRound.get(round) ?? 0;
@@ -189,7 +189,6 @@ function aggregatePerSite(
       const wtR = wtCounts.get(round) ?? 0;
       row[`Count_${round}`] = c;
       row[`RPM_${round}`] = rpm;
-      row[`Enrich_Global_${round}`] = Math.log2((rpm + PSEUDO) / (rpm0 + PSEUDO));
       row[`Fitness_vs_WT_${round}`] = Math.log2(
         ((c + PSEUDO) / (wtR + PSEUDO)) / ((c0 + PSEUDO) / (wt0 + PSEUDO)),
       );
@@ -210,14 +209,15 @@ function aggregatePerSite(
     const centeredCol = `Centered_Fitness_${round}`;
     const zCol = `Z_Fitness_${round}`;
     const pCol = `Pval_Fitness_${round}`;
-    const nl10pCol = `NegLog10Pval_Fitness_${round}`;
     const qCol = `FDR_q_${round}`;
+    const varCol = `Var_Fitness_${round}`;
 
-    // Per-row SE / Z / p.
+    // Per-row SE / Z / p / Var (four-term Poisson δ-method).
     const pvals: number[] = [];
     for (const row of rows) {
       const cR = row[`Count_${round}`] as number;
       const c0 = c0Cache[String(row.Variant_AA)] ?? 0;
+      const variance = varLog2WtRatio(cR, wtR, c0, wt0, PSEUDO);
       const se = seLog2WtRatio(cR, wtR, c0, wt0, PSEUDO);
       const safeSe = se > 1e-12 ? se : 1e-12;
       const fitness = row[fitnessCol] as number;
@@ -225,7 +225,7 @@ function aggregatePerSite(
       const p = twoSidedPvalue(z);
       row[zCol] = z;
       row[pCol] = p;
-      row[nl10pCol] = negLog10P(p);
+      row[varCol] = variance;
       pvals.push(p);
     }
 
@@ -245,11 +245,15 @@ function aggregatePerSite(
     }
   }
 
-  // Sort: Fitness_vs_WT of last round desc, then Variant_AA asc (stable).
-  const fitKey = `Fitness_vs_WT_${lastRound}`;
+  // Sort: Centered_Fitness of last round desc (Phase 6.16 — was Fitness_vs_WT;
+  // both produce the same ordering since the median offset is a constant per
+  // (site, round), but anchoring the sort on the column users will actually
+  // see in the CSV keeps the top-N rows match the sort order they expect).
+  // Tiebreaker: Variant_AA asc (stable).
+  const sortKey = `Centered_Fitness_${lastRound}`;
   rows.sort((a, b) => {
-    const fa = (a[fitKey] as number) ?? 0;
-    const fb = (b[fitKey] as number) ?? 0;
+    const fa = (a[sortKey] as number) ?? 0;
+    const fb = (b[sortKey] as number) ?? 0;
     if (fb !== fa) return fb - fa;
     return String(a.Variant_AA).localeCompare(String(b.Variant_AA));
   });
@@ -299,7 +303,7 @@ function aggregateHaplotypes(
   const firstRound = input.roundNames[0]!;
   const lastRound = input.roundNames[input.roundNames.length - 1]!;
 
-  // ---- Pass 1: counts + fold-change columns.
+  // ---- Pass 1: counts + Fitness_vs_WT (Enrich_Global removed in Phase 6.16).
   const rows: NanoporeAnalyzerRow[] = [];
   for (const agg of aaMap.values()) {
     const dominantDna = pickDominant(agg.dnaTotals);
@@ -308,8 +312,6 @@ function aggregateHaplotypes(
       Haplotype_DNA: dominantDna,
     };
     const c0 = agg.perRound.get(firstRound) ?? 0;
-    const denom0 = denom.get(firstRound) ?? 0;
-    const rpm0 = denom0 > 0 ? (c0 / denom0) * 1e6 : 0;
     const wt0 = wtCounts.get(firstRound) ?? 0;
     for (const round of input.roundNames) {
       const c = agg.perRound.get(round) ?? 0;
@@ -318,7 +320,6 @@ function aggregateHaplotypes(
       const wtR = wtCounts.get(round) ?? 0;
       row[`Count_${round}`] = c;
       row[`RPM_${round}`] = rpm;
-      row[`Enrich_Global_${round}`] = Math.log2((rpm + PSEUDO) / (rpm0 + PSEUDO));
       row[`Fitness_vs_WT_${round}`] = Math.log2(
         ((c + PSEUDO) / (wtR + PSEUDO)) / ((c0 + PSEUDO) / (wt0 + PSEUDO)),
       );
@@ -335,13 +336,14 @@ function aggregateHaplotypes(
     const centeredCol = `Centered_Fitness_${round}`;
     const zCol = `Z_Fitness_${round}`;
     const pCol = `Pval_Fitness_${round}`;
-    const nl10pCol = `NegLog10Pval_Fitness_${round}`;
     const qCol = `FDR_q_${round}`;
+    const varCol = `Var_Fitness_${round}`;
 
     const pvals: number[] = [];
     for (const row of rows) {
       const cR = row[`Count_${round}`] as number;
       const c0 = row[`Count_${firstRound}`] as number;
+      const variance = varLog2WtRatio(cR, wtR, c0, wt0, PSEUDO);
       const se = seLog2WtRatio(cR, wtR, c0, wt0, PSEUDO);
       const safeSe = se > 1e-12 ? se : 1e-12;
       const fitness = row[fitnessCol] as number;
@@ -349,7 +351,7 @@ function aggregateHaplotypes(
       const p = twoSidedPvalue(z);
       row[zCol] = z;
       row[pCol] = p;
-      row[nl10pCol] = negLog10P(p);
+      row[varCol] = variance;
       pvals.push(p);
     }
 
@@ -369,10 +371,11 @@ function aggregateHaplotypes(
     }
   }
 
-  const fitKey = `Fitness_vs_WT_${lastRound}`;
+  // Sort by Centered_Fitness of last round desc (Phase 6.16).
+  const sortKey = `Centered_Fitness_${lastRound}`;
   rows.sort((a, b) => {
-    const fa = (a[fitKey] as number) ?? 0;
-    const fb = (b[fitKey] as number) ?? 0;
+    const fa = (a[sortKey] as number) ?? 0;
+    const fb = (b[sortKey] as number) ?? 0;
     if (fb !== fa) return fb - fa;
     return String(a.Haplotype_AA).localeCompare(String(b.Haplotype_AA));
   });
@@ -407,7 +410,12 @@ function buildPerSiteColumns(roundNames: ReadonlyArray<string>): ColumnSpec[] {
   ];
   for (const r of roundNames) cols.push({ name: `Count_${r}`, type: "int" });
   for (const r of roundNames) cols.push({ name: `RPM_${r}`, type: "float" });
-  for (const r of roundNames) cols.push({ name: `Enrich_Global_${r}`, type: "float" });
+  // Phase 6.16: dropped Enrich_Global_<r> and NegLog10Pval_Fitness_<r>.
+  // Centered_Fitness is the canonical fold-change column; raw Fitness_vs_WT
+  // and Enrich_Global are recoverable as `Centered_Fitness + libraryMedian`
+  // and `log₂((RPM+1)/(RPM₀+1))` respectively. NegLog10Pval is one CSV
+  // column away (`−log₁₀(Pval)`). Removing them frees room for Var_Fitness
+  // without growing CSV width.
   for (const r of roundNames) cols.push({ name: `Fitness_vs_WT_${r}`, type: "float" });
   // Stats columns skip round 0 — Fitness_vs_WT_0 is identically 0 by
   // construction and the derived Z / p / centered would be degenerate.
@@ -415,8 +423,12 @@ function buildPerSiteColumns(roundNames: ReadonlyArray<string>): ColumnSpec[] {
   for (const r of enrichableRounds) cols.push({ name: `Centered_Fitness_${r}`, type: "float" });
   for (const r of enrichableRounds) cols.push({ name: `Z_Fitness_${r}`, type: "float" });
   for (const r of enrichableRounds) cols.push({ name: `Pval_Fitness_${r}`, type: "float" });
-  for (const r of enrichableRounds) cols.push({ name: `NegLog10Pval_Fitness_${r}`, type: "float" });
   for (const r of enrichableRounds) cols.push({ name: `FDR_q_${r}`, type: "float" });
+  // σ² of Fitness_vs_WT (four-term Poisson delta). ML inverse-variance weight
+  // = 1/Var_Fitness; the four-term form correctly reflects that the WT
+  // denominator is itself a Poisson count (unlike cDNA where the library
+  // total is treated as fixed).
+  for (const r of enrichableRounds) cols.push({ name: `Var_Fitness_${r}`, type: "float" });
   return cols;
 }
 
@@ -427,13 +439,12 @@ function buildHaplotypeColumns(roundNames: ReadonlyArray<string>): ColumnSpec[] 
   ];
   for (const r of roundNames) cols.push({ name: `Count_${r}`, type: "int" });
   for (const r of roundNames) cols.push({ name: `RPM_${r}`, type: "float" });
-  for (const r of roundNames) cols.push({ name: `Enrich_Global_${r}`, type: "float" });
   for (const r of roundNames) cols.push({ name: `Fitness_vs_WT_${r}`, type: "float" });
   const enrichableRounds = roundNames.slice(1);
   for (const r of enrichableRounds) cols.push({ name: `Centered_Fitness_${r}`, type: "float" });
   for (const r of enrichableRounds) cols.push({ name: `Z_Fitness_${r}`, type: "float" });
   for (const r of enrichableRounds) cols.push({ name: `Pval_Fitness_${r}`, type: "float" });
-  for (const r of enrichableRounds) cols.push({ name: `NegLog10Pval_Fitness_${r}`, type: "float" });
   for (const r of enrichableRounds) cols.push({ name: `FDR_q_${r}`, type: "float" });
+  for (const r of enrichableRounds) cols.push({ name: `Var_Fitness_${r}`, type: "float" });
   return cols;
 }
