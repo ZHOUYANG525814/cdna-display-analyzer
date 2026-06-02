@@ -385,9 +385,14 @@ interface HeaderPlan {
 function planHeader(headerLine: string): HeaderPlan | null {
   const headers = headerLine.split(",");
   const pepCol = headers.indexOf("Peptide_Seq");
-  const gcCol = headers.indexOf("GC_Percent");
+  // GC_Percent was dropped from the CSV in Phase 6.12 (derivable from
+  // Dominant_DNA_Seq). The streaming parser must NOT bail when it's absent —
+  // otherwise the whole result is empty and the dashboard hides every
+  // visualization that depends on the matrix. Tolerate gcCol === -1 and let
+  // downstream consumers treat gc as 0 / NaN.
+  const gcCol = headers.indexOf("GC_Percent"); // may be -1 post-Phase 6.12
   const dnaCol = headers.indexOf("Dominant_DNA_Seq");
-  if (pepCol === -1 || gcCol === -1) return null;
+  if (pepCol === -1) return null;
 
   const countCols: HeaderPlan["countCols"] = [];
   const rpmCols: HeaderPlan["rpmCols"] = [];
