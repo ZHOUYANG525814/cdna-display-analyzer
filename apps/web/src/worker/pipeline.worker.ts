@@ -164,6 +164,34 @@ const api = {
       const csvBlob = csvParts ? new Blob(csvParts, { type: "text/csv" }) : null;
       log(`csvParts lines=${csvParts?.length ?? 0} → wrapped as Blob (size=${csvBlob?.size ?? 0})`);
 
+      // Compute hit counts per (last_round vs first) FDR threshold so the
+      // Results page can render headline numbers without re-parsing the CSV.
+      const libraryMedianEnrich = result.analyzer?.libraryMedianEnrich ?? {};
+      const hitCounts: Array<{ label: string; q05: number; q01: number; total: number }> = [];
+      if (result.analyzer) {
+        const roundNames = job.rounds.map((r) => r.name);
+        const first = roundNames[0];
+        for (let i = 1; i < roundNames.length; i++) {
+          const curr = roundNames[i]!;
+          const qCol = `FDR_q_${curr}_vs_${first}`;
+          let q05 = 0;
+          let q01 = 0;
+          for (const row of result.analyzer.rows) {
+            const q = row[qCol] as number;
+            if (Number.isFinite(q)) {
+              if (q < 0.05) q05++;
+              if (q < 0.01) q01++;
+            }
+          }
+          hitCounts.push({
+            label: `${curr} vs ${first}`,
+            q05,
+            q01,
+            total: result.analyzer.rows.length,
+          });
+        }
+      }
+
       return {
         runStatsJson: result.runStatsJson,
         csvBlob,
@@ -171,6 +199,8 @@ const api = {
         unassignedBreakdown: result.unassignedBreakdown,
         statsByRound,
         roundNames: job.rounds.map((r) => r.name),
+        libraryMedianEnrich,
+        hitCounts,
       };
     } catch (e: unknown) {
       const err = e as Error;
@@ -286,6 +316,32 @@ const api = {
           ` (sizes: per-site=${perSiteCsvBlob?.size ?? 0}, hap=${haplotypeCsvBlob?.size ?? 0})`,
       );
 
+      // Hit counts per (site, lastRound vs first) at standard FDR thresholds.
+      // Same shape as the cDNA path so the MethodsCard can render identically.
+      const libraryMedianFitness = result.analyzer.libraryMedianFitness;
+      const hitCounts: Array<{ label: string; q05: number; q01: number; total: number }> = [];
+      const npRoundNames = result.roundNames;
+      const npLast = npRoundNames[npRoundNames.length - 1];
+      const npFirst = npRoundNames[0];
+      if (npLast && npFirst && npLast !== npFirst) {
+        const qCol = `FDR_q_${npLast}`;
+        const counts = new Map<string, { q05: number; q01: number; total: number }>();
+        for (const row of result.analyzer.perSiteRows) {
+          const site = String(row.Site);
+          const c = counts.get(site) ?? { q05: 0, q01: 0, total: 0 };
+          c.total++;
+          const q = row[qCol] as number;
+          if (Number.isFinite(q)) {
+            if (q < 0.05) c.q05++;
+            if (q < 0.01) c.q01++;
+          }
+          counts.set(site, c);
+        }
+        for (const [site, c] of counts) {
+          hitCounts.push({ label: `${site} @ ${npLast}`, ...c });
+        }
+      }
+
       return {
         perSiteCsvBlob,
         haplotypeCsvBlob,
@@ -297,6 +353,8 @@ const api = {
         siteNames: result.siteNames,
         resolvedWtBySite,
         expectedRoiLenBySite,
+        libraryMedianFitness,
+        hitCounts,
       };
     } catch (e: unknown) {
       const err = e as Error;

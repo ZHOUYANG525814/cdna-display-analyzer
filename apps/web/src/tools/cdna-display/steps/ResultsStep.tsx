@@ -15,6 +15,8 @@ import {
   streamParseEnrichmentBlob,
   type StreamCsvResult,
 } from "@/tools/cdna-display/viz/csvParse";
+import { CDNA_METHODS } from "@cdna/core";
+import { MethodsCard } from "@/components/MethodsCard";
 
 export function ResultsStep() {
   const state = useRunStore();
@@ -109,13 +111,30 @@ export function ResultsStep() {
           <ul className="text-sm text-muted-foreground space-y-1">
             <li>• <code className="font-mono text-xs">Master_Enrichment_Matrix.csv</code> — the full peptide matrix</li>
             <li>• <code className="font-mono text-xs">run_stats.json</code> — per-round demultiplex counts (machine-readable)</li>
-            <li>• <code className="font-mono text-xs">QC_Summary_Report.txt</code> — human-readable summary</li>
+            <li>• <code className="font-mono text-xs">QC_Summary_Report.txt</code> — human-readable summary + methods + column reference</li>
           </ul>
           <p className="mt-3 text-xs text-muted-foreground">
             Pipeline ran in {elapsed.toFixed(1)}s · {state.useWasm ? "WASM scoring" : "TS scoring"}
           </p>
         </CardContent>
       </Card>
+
+      {/* Methods & column reference. Phase 6.14: same content as the
+          QC_Summary_Report.txt download, rendered inline so users can read
+          column definitions while looking at the dashboard. Default-
+          collapsed so the dashboard's main viz stays above the fold. */}
+      <MethodsCard
+        doc={CDNA_METHODS}
+        settings={[
+          { label: "Pipeline mode", value: state.pipelineMode },
+          { label: "WASM scoring", value: state.useWasm ? "on" : "off" },
+          { label: "Min mean read Phred", value: `≥ ${state.minMeanPhred.toFixed(1)}` },
+          { label: "Min mean CDS Phred", value: `≥ ${state.minMeanPhredCds.toFixed(1)}` },
+          { label: "Discard premature stops", value: state.filterStop ? "yes" : "no" },
+        ]}
+        libraryMedian={outcome.libraryMedianEnrich}
+        hitCounts={outcome.hitCounts}
+      />
 
       <Card>
         <CardHeader>

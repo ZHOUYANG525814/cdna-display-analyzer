@@ -10,6 +10,8 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import type { NanoporeOutcome } from "@/state/useNanoporeStore";
+import { NANOPORE_METHODS } from "@cdna/core";
+import { MethodsCard } from "@/components/MethodsCard";
 
 export function ResultsStep() {
   const outcome = useNanoporeStore((s) => s.outcome);
@@ -42,6 +44,21 @@ export function ResultsStep() {
   return <ResultsLoaded outcome={outcome} projectName={projectName} onPrev={goPrev} onReset={() => { resetRun(); setStep("sources"); }} />;
 }
 
+/** Pull the active Nanopore settings into the shape MethodsCard expects.
+ *  Kept as a hook so the cell-by-cell rendering doesn't re-read the store. */
+function useMethodsSettings(): ReadonlyArray<{ label: string; value: string }> {
+  const pipelineMode = useNanoporeStore((s) => s.pipelineMode);
+  const reportHaplotype = useNanoporeStore((s) => s.reportHaplotype);
+  const minMeanPhredRead = useNanoporeStore((s) => s.minMeanPhredRead);
+  const minMeanPhredRoi = useNanoporeStore((s) => s.minMeanPhredRoi);
+  return [
+    { label: "Pipeline mode", value: pipelineMode },
+    { label: "Min mean read Phred", value: `≥ ${minMeanPhredRead}` },
+    { label: "Min mean ROI Phred", value: `≥ ${minMeanPhredRoi}` },
+    { label: "Report linked haplotype", value: reportHaplotype ? "yes" : "no" },
+  ];
+}
+
 function ResultsLoaded({
   outcome,
   projectName,
@@ -53,6 +70,10 @@ function ResultsLoaded({
   onPrev: () => void;
   onReset: () => void;
 }) {
+  // Settings recap rows for the MethodsCard. Reads the active Nanopore-store
+  // values so the card reflects exactly the parameters the engine ran with.
+  const settings = useMethodsSettings();
+
   // Aggregate totals across rounds for the stat-card row.
   const totals = useMemo(() => {
     let passedQc = 0;
@@ -202,6 +223,16 @@ function ResultsLoaded({
           </Tabs>
         </CardContent>
       </Card>
+
+      {/* Methods & column reference (Phase 6.14). Default-collapsed so the
+          dashboard's main viz stays above the fold. Renders the same
+          content that gets appended to the downloaded QC report. */}
+      <MethodsCard
+        doc={NANOPORE_METHODS}
+        settings={settings}
+        libraryMedian={outcome.libraryMedianFitness}
+        hitCounts={outcome.hitCounts}
+      />
 
       <div className="flex justify-between">
         <Button variant="outline" onClick={onPrev}>

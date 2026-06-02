@@ -70,6 +70,14 @@ export interface PipelineOutcome {
   unassignedBreakdown: UnassignedBreakdown;
   statsByRound: Record<string, RoundStats>;
   roundNames: string[];
+  /** Library median of `Enrich_Global_<round>_vs_<first>` for each non-first
+   *  round. Used by the MethodsCard on Results to surface dropout-regime
+   *  warnings (median far from zero ⇒ Centered_Enrich may over-correct). */
+  libraryMedianEnrich: Record<string, number>;
+  /** Hit counts at standard FDR thresholds per comparison. Populated by the
+   *  worker so the Results page can render headline counts without
+   *  re-parsing the CSV. */
+  hitCounts: Array<{ label: string; q05: number; q01: number; total: number }>;
 }
 
 // --- Nanopore SSM tool ---------------------------------------------------
@@ -132,4 +140,11 @@ export interface NanoporeOutcome {
   resolvedWtBySite: Record<string, string>;
   /** Site name → expected ROI length. Used by the UI for verification text. */
   expectedRoiLenBySite: Record<string, number>;
+  /** Library median Fitness_vs_WT, keyed as "<siteName>:<round>" for per-site
+   *  medians and "__haplotype__:<round>" for haplotype-level medians.
+   *  Surfaced for the Methods card's dropout diagnostic. */
+  libraryMedianFitness: Record<string, number>;
+  /** Hit counts at standard FDR thresholds per (site, round) for the
+   *  Methods card. Same shape as the cDNA version. */
+  hitCounts: Array<{ label: string; q05: number; q01: number; total: number }>;
 }

@@ -10,6 +10,8 @@
 // the same task.
 
 import type { PipelineOutcome } from "../worker/types";
+import { CDNA_METHODS, formatMethodsAsText } from "@cdna/core";
+import { useRunStore } from "../state/useRunStore";
 
 function downloadBlob(blob: Blob, filename: string): void {
   const url = URL.createObjectURL(blob);
@@ -96,5 +98,25 @@ export function buildQcReport(outcome: PipelineOutcome, projectName: string): st
     );
   }
   lines.push("");
+
+  // --- Methods & column reference (Phase 6.14) ---------------------------
+  // Append the static column documentation + the per-run parameters so the
+  // QC_Summary_Report.txt artifact is self-contained: a user opening just
+  // this file can understand every column in the CSV without other context.
+  const s = useRunStore.getState();
+  const settings: Array<{ label: string; value: string }> = [
+    { label: "Pipeline mode", value: s.pipelineMode },
+    { label: "WASM scoring", value: s.useWasm ? "on" : "off" },
+    { label: "Min mean read Phred", value: `≥ ${s.minMeanPhred.toFixed(1)}` },
+    { label: "Min mean CDS Phred", value: `≥ ${s.minMeanPhredCds.toFixed(1)}` },
+    { label: "Discard premature stops", value: s.filterStop ? "yes" : "no" },
+  ];
+  const methodsText = formatMethodsAsText(CDNA_METHODS, {
+    settings,
+    libraryMedian: outcome.libraryMedianEnrich,
+    hitCounts: outcome.hitCounts,
+  });
+  lines.push(methodsText);
+
   return lines.join("\n");
 }

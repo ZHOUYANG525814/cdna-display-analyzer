@@ -9,6 +9,77 @@ Date format: `YYYY-MM-DD`.
 
 ---
 
+## 2026-06-01 — Phase 6.14 — Methods card + column reference (both tools)
+
+User asked for detailed math definitions for the non-intuitive columns — in
+the downloadable summary file AND on the results webpage. Implements both:
+the same structured documentation feeds the text and the UI.
+
+### New file: `packages/core/src/methods.ts`
+
+  - `MethodsDocument` interface: pseudocount, p-value method, FDR method,
+    centering scheme, plus grouped column docs (`ColumnDoc[]` with name,
+    summary, formula, notes) and run-level caveats.
+  - `CDNA_METHODS` and `NANOPORE_METHODS`: ready-to-render documents for
+    both tools. Each column documented with a plain-English summary, an
+    explicit Unicode-formula line, and caveats / when-it-breaks notes.
+  - `formatMethodsAsText(doc, runParams)`: pure-text renderer for the
+    QC_Summary_Report.txt appendage. Layout matches the existing report's
+    `=`-separator style. Interpolates run-specific parameters (settings,
+    library median, hit counts) when supplied.
+
+Documented columns include the ones that were genuinely opaque before:
+`Centered_Enrich`, `Centered_Fitness`, `Z_*`, `Pval_*`, `NegLog10Pval_*`,
+`FDR_q_*` — plus the headline ones (`Enrich_Global`, `Fitness_vs_WT`) for
+completeness so users opening the summary file have one unified reference.
+
+### Worker outcome wire types
+
+Added `libraryMedianEnrich` (cDNA) and `libraryMedianFitness` (Nanopore),
+plus `hitCounts: Array<{ label, q05, q01, total }>` to both outcomes.
+Worker fills these from the analyzer's return and the FDR_q columns; no
+re-parsing of the CSV on the main thread.
+
+### BrowserExporter (cDNA)
+
+`buildQcReport` now appends the methods + column reference. The downloaded
+QC_Summary_Report.txt is self-contained: a reviewer or future-self can open
+that one file and see exactly what every CSV column means + which knobs
+were set.
+
+Per-run parameters fed to the formatter:
+  - Pipeline mode, WASM flag, Q thresholds, filterStop
+  - `libraryMedianEnrich` per Enrich_Global column
+  - `hitCounts` per comparison at q<0.05 and q<0.01
+
+### New component: `apps/web/src/components/MethodsCard.tsx`
+
+Shared by both tools. Renders the same `MethodsDocument` as an expandable
+card on the Results page. Default-collapsed so the dashboard's main viz
+stays above the fold; one click expands a five-section layout:
+
+  1. This run (settings recap)
+  2. Library median (per-round/per-site, flagged when |median| > 1)
+  3. FDR hit counts table
+  4. Method choices (pseudocount, p-value test, FDR, centering)
+  5. Per-column documentation, grouped by section
+  6. Caveats (rendered in a warning-toned block)
+
+Cross-tool reuse: only the `doc` prop differs. Same layout, same UX.
+
+### Mounted on both Results pages
+
+  - cDNA `ResultsStep.tsx`: card inserted just below the Downloads card.
+  - Nanopore `ResultsStep.tsx`: card inserted before the bottom button row.
+
+### Tests + build
+
+  - 148 core + 7 web tests pass.
+  - Bundle: cDNA worker 79 KB (unchanged); web JS 1,184 KB (+ ~3 KB for
+    the documentation strings, gzipped down to ~264 KB).
+
+---
+
 ## 2026-06-01 — Phase 6.13 — Run-time logging + volcano hit annotations
 
 Responds to user (and their professor's) feedback: a scientific tool should

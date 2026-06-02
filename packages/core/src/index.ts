@@ -88,3 +88,12 @@ export {
   type NanoporeAnalyzerOutput,
   type NanoporeAnalyzerRow,
 } from "./nanopore-analyzer.js";
+
+export {
+  CDNA_METHODS,
+  NANOPORE_METHODS,
+  formatMethodsAsText,
+  type MethodsDocument,
+  type MethodsRunParams,
+  type ColumnDoc,
+} from "./methods.js";
