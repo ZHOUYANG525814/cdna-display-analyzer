@@ -9,6 +9,44 @@ Date format: `YYYY-MM-DD`.
 
 ---
 
+## 2026-06-02 — Phase 6.16.3 — Stepwise tooltip fix; bottom-20 surfaces depleted variants
+
+Two user-reported bugs:
+
+  1. **EnrichmentScatter stepwise tooltips showed `enrichment = 0`** for
+     every point. Root cause: column-name mismatch — the analyzer emits
+     `Enrich_Step_<curr>_vs_<prev>` (the literal column name), but the
+     CSV parser was looking for the prefix `Enrich_Stepwise_` (extra
+     "wise"). The parser therefore never populated `rec.stepwise[*]`,
+     and the tooltip read `Number(undefined) ?? 0`. Fixed both the
+     streaming `planHeader` and the legacy `parseEnrichmentMatrix` to
+     match the literal `Enrich_Step_` prefix.
+
+  2. **"CSV only has positive-enriched sequences"** — the user reported
+     no depleted variants visible. Investigation: the CSV is complete;
+     the analyzer emits every observed peptide (including those with
+     `Count_<lastRound> = 0`, which produce strongly-negative
+     Centered_Enrich). The CSV is sorted desc by Centered_Enrich, so the
+     depleted half lives at the bottom of the file. Excel only loads the
+     first ~1M rows — for libraries with > 1M unique peptides, opening
+     the CSV in Excel shows only the positive half. The .csv.gz is
+     correct.
+
+     Two UI changes to make this evident without leaving the dashboard:
+       - **New "Bottom 20 (most depleted)" preview table** on the
+         Results page, mirroring the Top-20 layout. The parser keeps a
+         sliding window of the last `topLimit` raw lines during the
+         stream (overhead: ~20 short strings); parses them once at
+         end-of-stream. Most-depleted row appears first; depletion-score
+         column rendered in warning color so it's visually obvious.
+       - **Excel-truncation warning callout** in the Downloads card
+         when `totalRows > 1,048,576`. Points at pandas / DuckDB /
+         `zcat | head` as alternatives, and reminds users to look at the
+         Bottom-20 table for confirmation that depleted variants are in
+         the file.
+
+---
+
 ## 2026-06-02 — Phase 6.16.2 — Top-20 made VISUALLY distinct; gzip default-on
 
 Phase 6.16.1 added Top-20 to the volcano/scatter sample but didn't make it

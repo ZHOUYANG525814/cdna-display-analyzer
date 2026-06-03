@@ -85,6 +85,7 @@ export function ResultsStep() {
   //   - matrix:        capped row table for volcano / scatter / logo / etc.
   //   - perRoundCounts: full per-round count arrays for rank-abundance + histogram
   const topPeptides = parsed?.top ?? { rows: [], totalRows: 0, sortColumn: "", roundColumns: [] };
+  const bottomPeptides = parsed?.bottom ?? { rows: [], totalRows: 0, sortColumn: "", roundColumns: [] };
   const parsedMatrix = parsed?.matrix ?? { rows: [], roundNames: [] };
   const perRoundCounts = parsed?.perRoundCounts ?? {
     countsByRound: {},
@@ -122,6 +123,23 @@ export function ResultsStep() {
             <li>• <code className="font-mono text-xs">run_stats.json</code> — per-round demultiplex counts (machine-readable)</li>
             <li>• <code className="font-mono text-xs">QC_Summary_Report.txt</code> — human-readable summary + methods + column reference</li>
           </ul>
+          {topPeptides.totalRows > 1_000_000 ? (
+            <div className="mt-3 rounded-md border border-warning/40 bg-warning/5 px-3 py-2 text-xs">
+              <span className="font-medium text-warning">⚠ </span>
+              <span className="text-foreground/90">
+                CSV has{" "}
+                <span className="font-mono tabular-nums">
+                  {topPeptides.totalRows.toLocaleString()}
+                </span>{" "}
+                rows — Excel truncates at 1,048,576. Use pandas / DuckDB /
+                <code className="font-mono mx-1">zcat … | head</code> instead.
+                Rows are sorted by <code className="font-mono">{topPeptides.sortColumn}</code>{" "}
+                desc, so depleted variants (negative enrichment, important
+                for ML negative training data) live at the bottom of the file
+                — see "Bottom 20" table below to confirm they're there.
+              </span>
+            </div>
+          ) : null}
           <p className="mt-3 text-xs text-muted-foreground">
             Pipeline ran in {elapsed.toFixed(1)}s · {state.useWasm ? "WASM scoring" : "TS scoring"}
           </p>
@@ -361,6 +379,51 @@ export function ResultsStep() {
                         <td key={c} className="py-1.5 pr-3 font-mono text-right">{r.rpm[c]?.toFixed(0) ?? "—"}</td>
                       ))}
                       <td className="py-1.5 font-mono text-right">{r.sortValue.toFixed(2)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {bottomPeptides.rows.length > 0 && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Bottom 20 (most depleted)</CardTitle>
+            <CardDescription>
+              The most negatively-enriched variants in the library — variants
+              the selection actively dropped. Important ML negative-training
+              data. Sorted ascending by{" "}
+              <code className="font-mono text-xs">{bottomPeptides.sortColumn}</code>;
+              row 1 here is the very last row in the downloaded CSV.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="border-b text-left text-muted-foreground">
+                    <th className="pb-2 pr-3 font-medium">#</th>
+                    <th className="pb-2 pr-3 font-medium">Peptide</th>
+                    {bottomPeptides.roundColumns.map((c) => (
+                      <th key={c} className="pb-2 pr-3 font-medium text-right">{c}</th>
+                    ))}
+                    <th className="pb-2 font-medium text-right">{bottomPeptides.sortColumn}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {bottomPeptides.rows.map((r, i) => (
+                    <tr key={i} className="border-b last:border-0">
+                      <td className="py-1.5 pr-3 font-mono text-muted-foreground">{i + 1}</td>
+                      <td className="py-1.5 pr-3 font-mono">{r.peptide}</td>
+                      {bottomPeptides.roundColumns.map((c) => (
+                        <td key={c} className="py-1.5 pr-3 font-mono text-right">{r.rpm[c]?.toFixed(1) ?? "—"}</td>
+                      ))}
+                      <td className="py-1.5 font-mono text-right text-warning">
+                        {r.sortValue.toFixed(2)}
+                      </td>
                     </tr>
                   ))}
                 </tbody>

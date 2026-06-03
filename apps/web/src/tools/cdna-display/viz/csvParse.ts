@@ -15,7 +15,7 @@ export interface PeptideRecord {
   count: Record<string, number>;
   /** Round name → reads per million (counts normalised by passed_qc). */
   rpm: Record<string, number>;
-  /** Enrich_Stepwise_<roundB>_vs_<roundA>, indexed by the destination round. */
+  /** Enrich_Step_<roundB>_vs_<roundA>, indexed by the destination round. */
   stepwise: Record<string, number>;
   /** Library-median-centered log₂ fold-change (Centered_Enrich_<dest>_vs_<first>).
    *  This is the canonical fold-change column post-Phase 6.16; the volcano
@@ -69,9 +69,12 @@ export function parseEnrichmentMatrix(csv: string, limit?: number): ParsedMatrix
       const round = h.slice("RPM_".length);
       rpmCols.push({ round, idx: i });
       roundNamesSet.add(round);
-    } else if (h.startsWith("Enrich_Stepwise_")) {
-      // Header pattern: Enrich_Stepwise_<dest>_vs_<src>. We key by dest.
-      const rest = h.slice("Enrich_Stepwise_".length);
+    } else if (h.startsWith("Enrich_Step_")) {
+      // Header pattern: Enrich_Step_<dest>_vs_<src>. We key by dest.
+      // (Phase 6.16.3: was incorrectly looking for "Enrich_Stepwise_" which
+      // doesn't match the analyzer's actual column name — the scatter's
+      // stepwise tooltip always read undefined and rendered 0.)
+      const rest = h.slice("Enrich_Step_".length);
       const sepIdx = rest.indexOf("_vs_");
       const dest = sepIdx === -1 ? rest : rest.slice(0, sepIdx);
       stepwiseCols.push({ dest, idx: i });
@@ -281,6 +284,12 @@ export interface StreamCsvResult {
   matrix: ParsedMatrix;
   perRoundCounts: PerRoundCounts;
   top: TopPreview;
+  /** Bottom-N rows by the sort column (= most-depleted variants since the
+   *  analyzer pre-sorts Centered_Enrich desc). Phase 6.16.3: makes the
+   *  depleted half of the library visible in the dashboard so users don't
+   *  mistake "Excel can't show > 1M rows" for "CSV has no depleted variants
+   *  for ML training". */
+  bottom: TopPreview;
   /** Total data rows seen (not capped by matrixLimit / topLimit). */
   totalRows: number;
 }
@@ -299,6 +308,7 @@ const EMPTY_RESULT: StreamCsvResult = {
   matrix: { rows: [], roundNames: [] },
   perRoundCounts: { countsByRound: {}, totalsByRound: {}, nByRound: {}, roundNames: [] },
   top: { rows: [], totalRows: 0, sortColumn: "", roundColumns: [] },
+  bottom: { rows: [], totalRows: 0, sortColumn: "", roundColumns: [] },
   totalRows: 0,
 };
 
@@ -354,6 +364,12 @@ export async function streamParseEnrichmentBlob(
   // Per-round top-K-by-count: sorted-ascending min-array of size ≤ K.
   // arr[0] is the running min; we replace it when a larger count arrives.
   const topKByRound: Record<string, number[]> = {};
+  // Sliding window of the last `topLimit` raw lines. Since the analyzer pre-
+  // sorts the CSV desc by Centered_Enrich, the last N lines == bottom-N by
+  // enrichment == the most-depleted variants. Storing raw lines (not parsed
+  // records) keeps the steady-state overhead at ~20 short strings; parse
+  // happens once at end-of-stream.
+  const bottomLineWindow: string[] = [];
 
   try {
     while (true) {
@@ -389,6 +405,9 @@ export async function streamParseEnrichmentBlob(
               nByRound,
               topKByRound,
             });
+            // Maintain sliding window of last `topLimit` lines for bottom-N.
+            bottomLineWindow.push(line);
+            if (bottomLineWindow.length > topLimit) bottomLineWindow.shift();
             totalRows++;
           }
         }
@@ -408,6 +427,8 @@ export async function streamParseEnrichmentBlob(
         nByRound,
         topKByRound,
       });
+      bottomLineWindow.push(carry);
+      if (bottomLineWindow.length > topLimit) bottomLineWindow.shift();
       totalRows++;
     }
   } finally {
@@ -429,6 +450,27 @@ export async function streamParseEnrichmentBlob(
     reservoir.sort((a, b) => b - a);
   }
 
+  // Parse the bottom window once — same TopRow shape so the UI can render it
+  // through the existing table component. With analyzer pre-sort desc, these
+  // are the most-depleted variants. The window list is in the order they
+  // arrived (oldest → newest in the CSV stream); reverse so the most-depleted
+  // (last-in-CSV) appears first in the table.
+  const bottomRows: TopRow[] = [];
+  if (header.topSortColumnIdx >= 0) {
+    for (let i = bottomLineWindow.length - 1; i >= 0; i--) {
+      const line = bottomLineWindow[i]!;
+      const cells = line.split(",");
+      const rpm: Record<string, number> = {};
+      for (const c of header.rpmCols) rpm[c.name] = Number(cells[c.idx] ?? "0");
+      bottomRows.push({
+        peptide: cells[header.pepCol] ?? "",
+        gc: header.gcCol >= 0 ? Number(cells[header.gcCol] ?? "0") : 0,
+        rpm,
+        sortValue: Number(cells[header.topSortColumnIdx] ?? "0"),
+      });
+    }
+  }
+
   return {
     matrix: { rows: matrixRows, roundNames: header.matrixRoundNames },
     perRoundCounts: {
@@ -439,6 +481,12 @@ export async function streamParseEnrichmentBlob(
     },
     top: {
       rows: topRows,
+      totalRows,
+      sortColumn: header.topSortColumnName,
+      roundColumns: header.rpmCols.map((c) => c.name),
+    },
+    bottom: {
+      rows: bottomRows,
       totalRows,
       sortColumn: header.topSortColumnName,
       roundColumns: header.rpmCols.map((c) => c.name),
@@ -504,8 +552,9 @@ function planHeader(headerLine: string): HeaderPlan | null {
       const round = h.slice("RPM_".length);
       rpmCols.push({ name: h, round, idx: i });
       roundNamesSet.add(round);
-    } else if (h.startsWith("Enrich_Stepwise_")) {
-      const rest = h.slice("Enrich_Stepwise_".length);
+    } else if (h.startsWith("Enrich_Step_")) {
+      // Phase 6.16.3 fix — see parseEnrichmentMatrix for context.
+      const rest = h.slice("Enrich_Step_".length);
       const sepIdx = rest.indexOf("_vs_");
       stepwiseCols.push({ dest: sepIdx === -1 ? rest : rest.slice(0, sepIdx), idx: i });
     } else if (h.startsWith("Centered_Enrich_")) {
