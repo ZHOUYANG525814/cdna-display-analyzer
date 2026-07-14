@@ -169,6 +169,8 @@ export interface TargetedNanoporeJob {
 export interface TargetedNanoporeOutcome {
   perSiteCsvBlob: Blob | null;
   haplotypeCsvBlob: Blob | null;
+  exactCodonCsvBlob: Blob | null;
+  exactHaplotypeCsvBlob: Blob | null;
   perSiteRowsPreview: NanoporeAnalyzerRow[];
   haplotypeRowsPreview: NanoporeAnalyzerRow[];
   statsByRound: Record<string, TargetedRoundRunStats>;
@@ -177,4 +179,5 @@ export interface TargetedNanoporeOutcome {
   siteNames: string[];
   wtBySite: Record<string, string>;
   libraryMedianFitness: Record<string, number>;
+  hitCounts: Array<{ label: string; q05: number; q01: number; total: number }>;
 }

@@ -72,7 +72,7 @@ export function InputsStep() {
       cdsStart: 1, cdsEnd: NANOPORE_DEMO_REFERENCE.length, cdsStrand: "+",
       sites: NANOPORE_DEMO_SITES.map((site) => ({ ...site })),
       settings: { ...TARGETED_USER_DEFAULTS }, qcLocked: false, reportHaplotypes: true,
-      runState: { status: "idle", error: null, outcome: null },
+      runState: { status: "idle", error: null, outcome: null, startedAt: null, finishedAt: null },
     });
     setFileErrors([]); setDriveError(null);
   };

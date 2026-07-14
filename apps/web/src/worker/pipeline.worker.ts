@@ -403,9 +403,35 @@ const api = {
     for (const [round, value] of result.stats) statsByRound[round] = value;
     const wtBySite: Record<string, string> = {};
     for (const site of result.resolvedSites) wtBySite[site.name] = site.wtDna;
+    const hitCounts: Array<{ label: string; q05: number; q01: number; total: number }> = [];
+    for (const comparisonRound of job.roundNames.slice(1)) {
+      const qColumn = `FDR_q_${comparisonRound}`;
+      for (const site of result.resolvedSites) {
+        const rows = result.analyzer.perSiteRows.filter((row) => row.Site === site.name && row.Score_Eligible === "yes");
+        const qValues = rows.map((row) => Number(row[qColumn])).filter(Number.isFinite);
+        hitCounts.push({
+          label: `${site.name} @ ${comparisonRound} vs Round 0`,
+          q05: qValues.filter((q) => q < 0.05).length,
+          q01: qValues.filter((q) => q < 0.01).length,
+          total: rows.length,
+        });
+      }
+      const haplotypeRows = result.analyzer.haplotypeRows.filter((row) => row.Score_Eligible === "yes");
+      if (haplotypeRows.length) {
+        const qValues = haplotypeRows.map((row) => Number(row[qColumn])).filter(Number.isFinite);
+        hitCounts.push({
+          label: `target haplotype @ ${comparisonRound} vs Round 0`,
+          q05: qValues.filter((q) => q < 0.05).length,
+          q01: qValues.filter((q) => q < 0.01).length,
+          total: haplotypeRows.length,
+        });
+      }
+    }
     return {
       perSiteCsvBlob: result.analyzer.perSiteCsvParts.length ? new Blob(result.analyzer.perSiteCsvParts, { type: "text/csv" }) : null,
       haplotypeCsvBlob: result.analyzer.haplotypeCsvParts.length ? new Blob(result.analyzer.haplotypeCsvParts, { type: "text/csv" }) : null,
+      exactCodonCsvBlob: result.exactCodonCsvParts.length ? new Blob(result.exactCodonCsvParts, { type: "text/csv" }) : null,
+      exactHaplotypeCsvBlob: result.exactHaplotypeCsvParts.length ? new Blob(result.exactHaplotypeCsvParts, { type: "text/csv" }) : null,
       perSiteRowsPreview: result.analyzer.perSiteRows.slice(0, PREVIEW_ROWS),
       haplotypeRowsPreview: result.analyzer.haplotypeRows.slice(0, PREVIEW_ROWS),
       statsByRound,
@@ -414,6 +440,7 @@ const api = {
       siteNames: result.resolvedSites.map((s) => s.name),
       wtBySite,
       libraryMedianFitness: result.analyzer.libraryMedianFitness,
+      hitCounts,
     };
   },
 

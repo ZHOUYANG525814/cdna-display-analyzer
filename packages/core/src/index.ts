@@ -93,6 +93,7 @@ export {
 export {
   CDNA_METHODS,
   NANOPORE_METHODS,
+  TARGETED_NANOPORE_METHODS,
   formatMethodsAsText,
   type MethodsDocument,
   type MethodsRunParams,

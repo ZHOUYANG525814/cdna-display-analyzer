@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { targetedDesignErrors, targetedInputErrors, targetedSourceErrors } from "../src/state/useTargetedNanoporeStore";
+import { targetedDesignErrors, targetedInputErrors, targetedSourceErrors, useTargetedNanoporeStore } from "../src/state/useTargetedNanoporeStore";
 
 describe("targeted Nanopore web contract", () => {
   it("requires consecutive rounds and at least one file per round", () => {
@@ -40,5 +40,22 @@ describe("targeted Nanopore web contract", () => {
       { id: "r1", round: 1, files: [{ id: "b", file: a, driveRef: null }] },
     ] });
     expect(duplicate).toContain("The same FASTQ source cannot be assigned twice.");
+  });
+
+  it("prepares a next run without losing the confirmed biological design", () => {
+    useTargetedNanoporeStore.setState({
+      projectName: "finished", referenceSeq: "ACG".repeat(20), cdsStart: 1, cdsEnd: 60,
+      sites: [{ id: "s", name: "site_01", ntStart: 1 }],
+      rounds: [{ id: "r", round: 0, files: [{ id: "f", file: new File(["x"], "x.fastq"), driveRef: null }] }],
+      currentStep: "results", qcLocked: true,
+    });
+    useTargetedNanoporeStore.getState().prepareNextRun();
+    const state = useTargetedNanoporeStore.getState();
+    expect(state.currentStep).toBe("inputs");
+    expect(state.projectName).toBe("");
+    expect(state.rounds.map((r) => [r.round, r.files.length])).toEqual([[0, 0], [1, 0]]);
+    expect(state.referenceSeq).toBe("ACG".repeat(20));
+    expect(state.sites[0]!.ntStart).toBe(1);
+    expect(state.qcLocked).toBe(false);
   });
 });

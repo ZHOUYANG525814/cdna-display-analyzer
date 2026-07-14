@@ -13,7 +13,7 @@ export function RunStep() {
   const [progress, setProgress] = useState<Record<number, { bytes: number; total: number | null; reads: number; name: string }>>({});
   const running = s.runState.status === "running";
   const run = async () => {
-    s.setRunState({ status: "running", error: null, outcome: null });
+    s.setRunState({ status: "running", error: null, outcome: null, startedAt: Date.now(), finishedAt: null });
     try {
       const localFiles: File[] = [], driveFiles: NonNullable<(typeof s.rounds)[number]["files"][number]["driveRef"]>[] = [];
       const localRounds: number[] = [], driveRounds: number[] = [];
@@ -33,9 +33,9 @@ export function RunStep() {
         sites: s.sites.map((site) => ({ name: site.name, ntStart: site.ntStart, length: 3, design: "NNK" as const })),
         settings: { ...s.settings, reportHaplotypes: s.reportHaplotypes },
       }, (p) => setProgress((old) => ({ ...old, [p.sourceIndex]: { bytes: p.bytesProcessed, total: p.totalBytes, reads: p.recordsProcessed, name: p.fileName } })));
-      s.setRunState({ status: "done", outcome });
+      s.setRunState({ status: "done", outcome, finishedAt: Date.now() });
       s.setStep("results");
-    } catch (error) { s.setRunState({ status: "error", error: error instanceof Error ? error.message : String(error) }); }
+    } catch (error) { s.setRunState({ status: "error", error: error instanceof Error ? error.message : String(error), finishedAt: Date.now() }); }
   };
   return <div className="space-y-6"><Card><CardHeader><CardTitle>Ready to stream</CardTitle><CardDescription>{s.rounds.length} rounds · {s.rounds.reduce((n, r) => n + r.files.length, 0)} FASTQ files · {s.sites.length} target codons. Files are processed sequentially and never buffered in full.</CardDescription></CardHeader><CardContent className="space-y-3">{Object.entries(progress).map(([i, p]) => <div key={i}><div className="mb-1 flex justify-between text-xs"><span>{p.name}</span><span>{p.reads.toLocaleString()} reads</span></div><Progress value={p.total ? p.bytes / p.total * 100 : undefined} /></div>)}{s.runState.error && <p className="text-sm text-destructive">{s.runState.error}</p>}</CardContent></Card>
     <div className="flex justify-between"><Button variant="outline" disabled={running} onClick={() => s.setStep("qc")}>Back</Button><Button disabled={running || !s.qcLocked} onClick={() => void run()}>{running ? "Analyzing…" : "Run analysis"}</Button></div></div>;

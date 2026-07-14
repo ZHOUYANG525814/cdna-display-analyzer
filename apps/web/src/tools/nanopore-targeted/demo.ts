@@ -1,12 +1,20 @@
 import type { TargetedRoundForm, TargetedSiteForm } from "@/state/useTargetedNanoporeStore";
 
-const DNA = "ACGT";
+const SENSE_CODONS = [
+  "TTT","TTC","TTA","TTG","TCT","TCC","TCA","TCG","TAT","TAC","TGT","TGC","TGG",
+  "CTT","CTC","CTA","CTG","CCT","CCC","CCA","CCG","CAT","CAC","CAA","CAG","CGT","CGC","CGA","CGG",
+  "ATT","ATC","ATA","ATG","ACT","ACC","ACA","ACG","AAT","AAC","AAA","AAG","AGT","AGC","AGA","AGG",
+  "GTT","GTC","GTA","GTG","GCT","GCC","GCA","GCG","GAT","GAC","GAA","GAG","GGT","GGC","GGA","GGG",
+] as const;
 function makeReference(): string {
   let state = 0x5eed1234;
   let out = "";
-  for (let i = 0; i < 540; i++) {
+  // Build a deterministic 180-codon CDS from the 61 sense codons. The demo
+  // is biologically readable and never teaches users that dozens of internal
+  // stops are normal in a coding reference.
+  for (let i = 0; i < 180; i++) {
     state = (Math.imul(state, 1664525) + 1013904223) >>> 0;
-    out += DNA[(state >>> 24) & 3]!;
+    out += SENSE_CODONS[state % SENSE_CODONS.length]!;
   }
   return replaceCodon(replaceCodon(out, 61, "GCT"), 451, "TAC");
 }

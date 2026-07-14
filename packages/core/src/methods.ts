@@ -385,6 +385,49 @@ export const NANOPORE_METHODS: MethodsDocument = {
   ],
 };
 
+/** Full-reference targeted/NNK Nanopore mode. Statistical columns are the
+ * same tested WT-normalized implementation as NANOPORE_METHODS; only read
+ * calling and QC semantics differ from the legacy dual-anchor SSM path. */
+export const TARGETED_NANOPORE_METHODS: MethodsDocument = {
+  ...NANOPORE_METHODS,
+  toolName: "Targeted Nanopore NNK Analyzer",
+  sections: [
+    {
+      title: "Variant identity",
+      columns: [
+        { name: "Site", summary: "User-confirmed codon position within the selected CDS; each site is an independent counting and FDR family." },
+        { name: "Variant_AA", summary: "Amino acid translated from a complete, high-quality three-base target call.", formula: "Variant_AA = translate(observed target codon)" },
+        { name: "Dominant_DNA", summary: "Most abundant synonymous codon for this amino acid across rounds. Every exact codon remains available in Exact_Codon_Counts.csv." },
+      ],
+    },
+    {
+      title: "Counts and normalization",
+      columns: [
+        {
+          name: "Count_<r>",
+          summary: "Callable observations for this amino acid at this site in round <r>.",
+          notes: [
+            "One semiglobal affine-gap alignment to the full amplicon projects substitutions, insertions and deletions into reference coordinates.",
+            "Target codons are masked from protected-reference identity, so intended substitutions do not fail whole-read QC.",
+            "A target-overlapping indel or low-Q/ambiguous target base makes only that site non-callable; other independently callable sites can still contribute.",
+            "Partial reads may contribute a site when both fixed 30-nt flanks pass protected identity. Rescued calls never enter multi-site haplotypes.",
+          ],
+        },
+        { name: "RPM_<r>", summary: "Reads per million using that site's callable total as denominator.", formula: "RPM_<r> = Count_<r> / callable_<site,r> × 10⁶" },
+      ],
+    },
+    ...NANOPORE_METHODS.sections.slice(2),
+  ],
+  caveats: [
+    "Pseudocount = 1.0 in every log2-based column; this choice mainly affects very-low-count variants.",
+    "Without biological replicates, the four-term Poisson variance captures counting uncertainty only and usually underestimates total experimental uncertainty. Z, p and FDR must not be presented as replicate-aware evidence.",
+    "Inference is blank when the Round 0 amino-acid count is below the locked threshold. Raw exact-codon and exact-haplotype counts are never removed by that threshold.",
+    "WT-normalized fitness becomes unstable when WT has very low counts. Inspect wt_count, Var_Fitness and the reported library median before interpreting a hit.",
+    "Protected-region substitutions and small indels are tolerated up to the locked QC limits. A systematic reference mismatch can therefore reduce yield and should be investigated from the QC funnel rather than reclassified as selection.",
+    "Off-NNK and stop codons remain visible in counts as QC/design diagnostics; they are not silently discarded.",
+  ],
+};
+
 // ============================================================================
 // Text formatter (writes the methods section into QC_Summary_Report.txt)
 // ============================================================================

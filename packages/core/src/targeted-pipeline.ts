@@ -2,6 +2,8 @@ import type { IFastqSource } from "@cdna/types";
 import { rcInto, reverseInto, uppercaseInto } from "./demultiplex.js";
 import { readFastqRecordsResilient } from "./fastq.js";
 import { runNanoporeAnalyzer, type NanoporeAnalyzerOutput } from "./nanopore-analyzer.js";
+import { serializeCsv, type AnalyzerRow, type ColumnSpec, type RowValue } from "./analyzer.js";
+import { translateDna } from "./dna.js";
 import type { NanoporeRoundStats, NanoporeSiteStats } from "./nanopore.js";
 import { alignTargetedReference, estimateReferenceOffset, type TargetedAlignment } from "./targeted-align.js";
 import { buildProtectedMask, buildTargetHaplotype, callTargetSites } from "./targeted-caller.js";
@@ -53,6 +55,11 @@ export interface TargetedPipelineResult {
   fileStats: TargetedFileStats[];
   resolvedSites: ResolvedTargetSite[];
   analyzer: NanoporeAnalyzerOutput;
+  /** Lossless exact-DNA count tables. The inferential analyzer intentionally
+   * collapses synonymous codons to amino acids; these companion files retain
+   * every observed target codon/haplotype so no aggregate count is hidden. */
+  exactCodonCsvParts: string[];
+  exactHaplotypeCsvParts: string[];
 }
 
 async function* streamToAsyncIter(stream: ReadableStream<Uint8Array>, signal: AbortSignal | undefined, onChunk: (n: number) => void): AsyncIterable<Uint8Array> {
@@ -188,7 +195,79 @@ export async function runTargetedNanoporePipeline(req: TargetedPipelineRequest):
     sites: sites.map((s) => ({ name: s.name, wtDna: s.wtDna })), emitHaplotype: req.settings.reportHaplotypes,
     minBaselineCountToScore: req.settings.minInputCountToScore,
   });
-  return { dnaCounters, haplotypeCounters, stats, fileStats, resolvedSites: sites, analyzer };
+  const exactCodonCsvParts = buildExactCodonCsv(req.roundNames, sites, dnaCounters, stats);
+  const exactHaplotypeCsvParts = req.settings.reportHaplotypes
+    ? buildExactHaplotypeCsv(req.roundNames, sites, haplotypeCounters, stats)
+    : [];
+  return { dnaCounters, haplotypeCounters, stats, fileStats, resolvedSites: sites, analyzer, exactCodonCsvParts, exactHaplotypeCsvParts };
+}
+
+function buildExactCodonCsv(
+  rounds: ReadonlyArray<string>, sites: ReadonlyArray<ResolvedTargetSite>,
+  counters: ReadonlyMap<string, ReadonlyMap<string, ReadonlyMap<string, number>>>,
+  stats: ReadonlyMap<string, TargetedRoundRunStats>,
+): string[] {
+  const rows: AnalyzerRow[] = [];
+  for (const site of sites) {
+    const observed = new Set<string>();
+    for (const round of rounds) for (const dna of counters.get(round)?.get(site.name)?.keys() ?? []) observed.add(dna);
+    for (const dna of [...observed].sort()) {
+      const row: Record<string, RowValue> = {
+        Site: site.name, Codon_DNA: dna, Variant_AA: translateDna(dna), Is_WT: dna === site.wtDna,
+        NNK_Compatible: /^[ACGT][ACGT][GT]$/.test(dna),
+      };
+      for (const round of rounds) {
+        const count = counters.get(round)?.get(site.name)?.get(dna) ?? 0;
+        const denom = stats.get(round)?.sites[site.name]?.passed_qc ?? 0;
+        row[`Count_${round}`] = count;
+        row[`RPM_${round}`] = denom > 0 ? count / denom * 1e6 : 0;
+      }
+      rows.push(row as AnalyzerRow);
+    }
+  }
+  const columns: ColumnSpec[] = [
+    { name: "Site", type: "string" }, { name: "Codon_DNA", type: "string" },
+    { name: "Variant_AA", type: "string" }, { name: "Is_WT", type: "bool" },
+    { name: "NNK_Compatible", type: "bool" },
+    ...rounds.flatMap((round) => ([
+      { name: `Count_${round}`, type: "int" as const },
+      { name: `RPM_${round}`, type: "float" as const },
+    ])),
+  ];
+  return serializeCsv(rows, columns);
+}
+
+function buildExactHaplotypeCsv(
+  rounds: ReadonlyArray<string>, sites: ReadonlyArray<ResolvedTargetSite>,
+  counters: ReadonlyMap<string, ReadonlyMap<string, number>>,
+  stats: ReadonlyMap<string, TargetedRoundRunStats>,
+): string[] {
+  if (sites.length < 2) return [];
+  const observed = new Set<string>();
+  for (const round of rounds) for (const dna of counters.get(round)?.keys() ?? []) observed.add(dna);
+  const rows: AnalyzerRow[] = [...observed].sort().map((dna) => {
+    const row: Record<string, RowValue> = {
+      Haplotype_DNA: dna,
+      Haplotype_AA: dna.split("_").map(translateDna).join("_"),
+      Is_WT: dna === sites.map((site) => site.wtDna).join("_"),
+    };
+    for (const round of rounds) {
+      const count = counters.get(round)?.get(dna) ?? 0;
+      const denom = stats.get(round)?.haplotype_passed_qc ?? 0;
+      row[`Count_${round}`] = count;
+      row[`RPM_${round}`] = denom > 0 ? count / denom * 1e6 : 0;
+    }
+    return row as AnalyzerRow;
+  });
+  const columns: ColumnSpec[] = [
+    { name: "Haplotype_DNA", type: "string" }, { name: "Haplotype_AA", type: "string" },
+    { name: "Is_WT", type: "bool" },
+    ...rounds.flatMap((round) => ([
+      { name: `Count_${round}`, type: "int" as const },
+      { name: `RPM_${round}`, type: "float" as const },
+    ])),
+  ];
+  return serializeCsv(rows, columns);
 }
 
 function isLocallyRescuable(alignment: TargetedAlignment, site: ResolvedTargetSite, mask: Uint8Array, settings: TargetedPipelineSettings): boolean {

@@ -36,6 +36,8 @@ export interface TargetedRunState {
   status: "idle" | "running" | "done" | "error";
   error: string | null;
   outcome: import("../worker/types").TargetedNanoporeOutcome | null;
+  startedAt: number | null;
+  finishedAt: number | null;
 }
 
 interface TargetedNanoporeState {
@@ -69,6 +71,9 @@ interface TargetedNanoporeState {
   setReportHaplotypes: (value: boolean) => void;
   runState: TargetedRunState;
   setRunState: (patch: Partial<TargetedRunState>) => void;
+  /** Start another experiment with the same reference, CDS, sites and locked
+   * method defaults, while removing every prior FASTQ and result. */
+  prepareNextRun: () => void;
 }
 
 export const TARGETED_USER_DEFAULTS: TargetedCallingSettings = {
@@ -156,8 +161,15 @@ export const useTargetedNanoporeStore = create<TargetedNanoporeState>((set, get)
   setQcLocked: (qcLocked) => set({ qcLocked }),
   reportHaplotypes: true,
   setReportHaplotypes: (reportHaplotypes) => set({ reportHaplotypes }),
-  runState: { status: "idle", error: null, outcome: null },
+  runState: { status: "idle", error: null, outcome: null, startedAt: null, finishedAt: null },
   setRunState: (patch) => set({ runState: { ...get().runState, ...patch } }),
+  prepareNextRun: () => set({
+    currentStep: "inputs",
+    projectName: "",
+    rounds: [makeRound(0), makeRound(1)],
+    qcLocked: false,
+    runState: { status: "idle", error: null, outcome: null, startedAt: null, finishedAt: null },
+  }),
 }));
 
 export function targetedInputErrors(state: Pick<TargetedNanoporeState,

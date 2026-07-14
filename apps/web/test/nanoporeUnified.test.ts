@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { runTargetedNanoporePipeline } from "@cdna/core";
+import { runTargetedNanoporePipeline, translateDna } from "@cdna/core";
 import { LocalFastqSource } from "../src/adapters/LocalFastqSource";
 import { AutoDecompressFastqSource } from "../src/adapters/AutoDecompressFastqSource";
 import { buildNanoporeDemoRounds, NANOPORE_DEMO_REFERENCE, NANOPORE_DEMO_SITES } from "../src/tools/nanopore-targeted/demo";
@@ -51,6 +51,11 @@ describe("unified Nanopore input whitelist", () => {
 });
 
 describe("built-in Nanopore demo", () => {
+  it("uses a continuous stop-free coding reference", () => {
+    expect(NANOPORE_DEMO_REFERENCE).toHaveLength(540);
+    expect(translateDna(NANOPORE_DEMO_REFERENCE)).not.toContain("*");
+  });
+
   it("runs through the production core and recovers the designed Round-2 double enrichment", async () => {
     const rounds = buildNanoporeDemoRounds();
     const sources: LocalFastqSource[] = [];
@@ -68,9 +73,21 @@ describe("built-in Nanopore demo", () => {
     expect(result.stats.get("Round 0")!.primary_drop_reasons.low_read_q).toBe(1);
     expect(result.stats.get("Round 2")!.primary_drop_reasons.concatemer_or_chimera).toBe(1);
     expect(result.fileStats.filter((file) => file.round === "Round 1")).toHaveLength(2);
+    for (const [roundName, round] of result.stats) {
+      expect(round.full_qc_passed + Object.values(round.primary_drop_reasons).reduce((a, b) => a + b, 0)).toBe(round.total_reads);
+      for (const site of NANOPORE_DEMO_SITES) {
+        const exactTotal = [...result.dnaCounters.get(roundName)!.get(site.name)!.values()].reduce((a, b) => a + b, 0);
+        expect(exactTotal).toBe(round.sites[site.name]!.passed_qc);
+      }
+    }
     const double = result.analyzer.haplotypeRows.find((row) => row.Haplotype_DNA === "TGG_CTG");
     expect(double).toBeTruthy();
     expect(double!["Count_Round 2"]).toBe(100);
     expect(double!["Fitness_vs_WT_Round 2"] as number).toBeGreaterThan(3);
+    const exactCodons = result.exactCodonCsvParts.join("");
+    const exactHaplotypes = result.exactHaplotypeCsvParts.join("");
+    expect(exactCodons).toContain("Codon_DNA");
+    expect(exactCodons).toContain("TGG");
+    expect(exactHaplotypes).toContain("TGG_CTG");
   }, 20_000);
 });
