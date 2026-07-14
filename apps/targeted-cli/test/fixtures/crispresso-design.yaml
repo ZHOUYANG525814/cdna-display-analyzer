@@ -1,0 +1,11 @@
+schemaVersion: 1
+reference:
+  crispressoJson: crispresso.json
+sites:
+  - name: site_A
+    ntStart: 7
+    design: NNK
+rounds:
+  - name: input
+    role: input
+    fastq: reads.fastq

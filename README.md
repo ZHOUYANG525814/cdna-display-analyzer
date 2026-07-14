@@ -149,11 +149,10 @@ web/
 │   │   ├── adapters/         # Local / Drive sources, GIS auth, exporter
 │   │   ├── worker/           # Comlink-exposed pipeline.worker.ts
 │   │   ├── state/            # Zustand store
-│   │   └── tools/            # Per-tool modules (currently just cdna-display)
-│   │       └── cdna-display/
-│   │           ├── index.ts          # Tool definition
-│   │           ├── preview.ts        # Anchor-alignment for the UI
-│   │           └── steps/            # The 5 wizard screens
+│   │   └── tools/            # Per-tool modules
+│   │       ├── cdna-display/         # Primer-demultiplexed cDNA pipeline
+│   │       ├── nanopore-ssm/         # Dual-anchor Nanopore SSM pipeline
+│   │       └── nanopore-targeted/    # Full-amplicon multi-codon NNK pipeline
 │   └── test/                 # Browser-side smoke tests
 ├── packages/
 │   ├── core/                 # Pure isomorphic pipeline
@@ -191,6 +190,8 @@ The local-files flow needs no setup.
 
 ## Status
 
-All planned phases (0 through 4.1) are complete and tested. See the in-repo
-plan / progress log for the full history, including the honest reads on
-WASM throughput and what changed between iterations.
+The cDNA-DISPLAY, dual-anchor Nanopore SSM, and full-amplicon targeted NNK
+pipelines are registered and tested. The targeted mode is a sibling core path,
+not a rewrite of the fixed-ROI engine; see its
+[processing contract](./docs/NANOPORE_TARGETED_WEB_MODE.md) and the original
+[architecture audit](./docs/NANOPORE_MTG_INITIAL_AUDIT.md).

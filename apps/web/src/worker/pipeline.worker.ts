@@ -10,12 +10,14 @@ import * as Comlink from "comlink";
 import {
   runPipeline,
   runNanoporePipeline,
+  runTargetedNanoporePipeline,
   type NanoporePipelineProgress,
   type PipelineProgress,
 } from "@cdna/core";
 import type { IAuthProvider, IFastqSource } from "@cdna/types";
 import { LocalFastqSource } from "../adapters/LocalFastqSource";
 import { DriveFastqSource } from "../adapters/DriveFastqSource";
+import { AutoDecompressFastqSource } from "../adapters/AutoDecompressFastqSource";
 import {
   streamParseEnrichmentBlob,
   type StreamCsvOptions,
@@ -24,6 +26,8 @@ import {
 import type {
   NanoporeJob,
   NanoporeOutcome,
+  TargetedNanoporeJob,
+  TargetedNanoporeOutcome,
   PipelineJob,
   PipelineLogMsg,
   PipelineProgressMsg,
@@ -367,6 +371,50 @@ const api = {
       console.error(`[worker] ${msg}`);
       throw e;
     }
+  },
+
+  async runTargetedNanopore(
+    job: TargetedNanoporeJob,
+    onProgress?: (msg: PipelineProgressMsg) => void,
+  ): Promise<TargetedNanoporeOutcome> {
+    if (job.driveFiles.length > 0 && !job.driveToken) throw new Error("Drive files require an OAuth token.");
+    const auth = job.driveToken ? staticAuth(job.driveToken) : null;
+    const sources: IFastqSource[] = [
+      ...job.localFiles.map((f) => new AutoDecompressFastqSource(new LocalFastqSource(f))),
+      ...job.driveFiles.map((d) => new AutoDecompressFastqSource(new DriveFastqSource(d, auth!))),
+    ];
+    const names = [...job.localFiles.map((f) => f.name), ...job.driveFiles.map((d) => d.name)];
+    const result = await runTargetedNanoporePipeline({
+      sources,
+      sourceRoundIndices: job.sourceRoundIndices,
+      roundNames: job.roundNames,
+      reference: job.reference,
+      sites: job.sites,
+      settings: job.settings,
+      onProgress: (p) => onProgress?.({
+        sourceIndex: p.sourceIndex,
+        fileName: names[p.sourceIndex] ?? "",
+        bytesProcessed: p.bytesProcessed,
+        totalBytes: p.totalBytes,
+        recordsProcessed: p.recordsProcessed,
+      }),
+    });
+    const statsByRound: Record<string, (typeof result.stats extends Map<string, infer V> ? V : never)> = {};
+    for (const [round, value] of result.stats) statsByRound[round] = value;
+    const wtBySite: Record<string, string> = {};
+    for (const site of result.resolvedSites) wtBySite[site.name] = site.wtDna;
+    return {
+      perSiteCsvBlob: result.analyzer.perSiteCsvParts.length ? new Blob(result.analyzer.perSiteCsvParts, { type: "text/csv" }) : null,
+      haplotypeCsvBlob: result.analyzer.haplotypeCsvParts.length ? new Blob(result.analyzer.haplotypeCsvParts, { type: "text/csv" }) : null,
+      perSiteRowsPreview: result.analyzer.perSiteRows.slice(0, PREVIEW_ROWS),
+      haplotypeRowsPreview: result.analyzer.haplotypeRows.slice(0, PREVIEW_ROWS),
+      statsByRound,
+      fileStats: result.fileStats,
+      roundNames: [...job.roundNames],
+      siteNames: result.resolvedSites.map((s) => s.name),
+      wtBySite,
+      libraryMedianFitness: result.analyzer.libraryMedianFitness,
+    };
   },
 
   /**

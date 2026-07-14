@@ -12,6 +12,25 @@ importers:
         specifier: ^5.6.3
         version: 5.9.3
 
+  apps/targeted-cli:
+    dependencies:
+      '@cdna/core':
+        specifier: workspace:*
+        version: link:../../packages/core
+      yaml:
+        specifier: ^2.6.0
+        version: 2.9.0
+    devDependencies:
+      '@types/node':
+        specifier: ^22.9.0
+        version: 22.19.19
+      typescript:
+        specifier: ^5.6.3
+        version: 5.9.3
+      vitest:
+        specifier: ^2.1.5
+        version: 2.1.9(@types/node@22.19.19)(happy-dom@15.11.7)
+
   apps/web:
     dependencies:
       '@cdna/core':

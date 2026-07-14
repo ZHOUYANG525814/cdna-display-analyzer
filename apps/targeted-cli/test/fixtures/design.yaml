@@ -1,0 +1,20 @@
+schemaVersion: 1
+reference:
+  fasta: reference.fa
+sites:
+  - name: site_A
+    ntStart: 7
+    design: NNK
+  - name: site_B
+    ntStart: 13
+    design: ANY
+rounds:
+  - name: input
+    role: input
+    fastq: reads.fastq
+qc:
+  minReadQ: 12
+  minAlignmentIdentity: 0.9
+  minReferenceCoverage: 0.95
+  minProtectedIdentity: 0.97
+  maxProtectedIndelBases: 0

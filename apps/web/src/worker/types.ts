@@ -14,6 +14,9 @@ import type {
   NanoporeGlobalBreakdown,
   NanoporeRoundStats,
   NanoporeSettings,
+  TargetedRoundRunStats,
+  TargetedFileStats,
+  TargetedPipelineSettings,
 } from "@cdna/core";
 
 export interface DriveFileRef {
@@ -147,4 +150,31 @@ export interface NanoporeOutcome {
   /** Hit counts at standard FDR thresholds per (site, round) for the
    *  Methods card. Same shape as the cDNA version. */
   hitCounts: Array<{ label: string; q05: number; q01: number; total: number }>;
+}
+
+// --- Targeted full-amplicon Nanopore tool -------------------------------
+
+export interface TargetedNanoporeJob {
+  localFiles: File[];
+  driveFiles: DriveFileRef[];
+  driveToken?: string;
+  /** Parallel to localFiles ++ driveFiles. */
+  sourceRoundIndices: number[];
+  roundNames: string[];
+  reference: string;
+  sites: Array<{ name: string; ntStart: number; length: 3; design: "NNK" }>;
+  settings: TargetedPipelineSettings;
+}
+
+export interface TargetedNanoporeOutcome {
+  perSiteCsvBlob: Blob | null;
+  haplotypeCsvBlob: Blob | null;
+  perSiteRowsPreview: NanoporeAnalyzerRow[];
+  haplotypeRowsPreview: NanoporeAnalyzerRow[];
+  statsByRound: Record<string, TargetedRoundRunStats>;
+  fileStats: TargetedFileStats[];
+  roundNames: string[];
+  siteNames: string[];
+  wtBySite: Record<string, string>;
+  libraryMedianFitness: Record<string, number>;
 }

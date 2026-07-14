@@ -1,6 +1,7 @@
-// Tool registration for the Nanopore-SSM pipeline. Mirrors the cDNA tool's
-// 5-step wizard layout; step components are UI mockups until the engine lands
-// (Phase 6.2+). Theme override lives in index.css under the data-tool selector.
+// Tool registration for the production Nanopore-SSM pipeline. It mirrors the
+// cDNA tool's 5-step wizard layout and is wired through the Worker to the core
+// dual-anchor engine. Theme overrides live in index.css under the data-tool
+// selector.
 
 import { Microscope } from "lucide-react";
 import type { Tool } from "@/tools/types";

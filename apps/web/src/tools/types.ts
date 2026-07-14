@@ -3,7 +3,7 @@
 // purely a renderer for whichever Tool is active — no tool-specific knowledge
 // leaks into the shell.
 //
-// Currently one tool ships (cdna-display). To add a second tool later:
+// The registry currently ships cdna-display and nanopore-ssm. To add another:
 //   1. Create tools/<new-id>/ with its own steps + pipeline helpers
 //   2. Export a Tool definition from tools/<new-id>/index.ts
 //   3. Add a tools/registry.ts and a tool-selector UI somewhere in the shell

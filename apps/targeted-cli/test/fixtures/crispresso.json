@@ -1,0 +1,10 @@
+{
+  "running_info": {
+    "args": {
+      "_type": "argparse.Namespace",
+      "value": {
+        "amplicon_seq": "ACGTCAGCTAAATGGCCGTA"
+      }
+    }
+  }
+}

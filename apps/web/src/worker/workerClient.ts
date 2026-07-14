@@ -11,6 +11,8 @@ import type {
 import type {
   NanoporeJob,
   NanoporeOutcome,
+  TargetedNanoporeJob,
+  TargetedNanoporeOutcome,
   PipelineJob,
   PipelineLogMsg,
   PipelineOutcome,
@@ -122,6 +124,16 @@ export async function runNanoporeInWorker(
     console.error("[main] worker.runNanopore() threw", err);
     throw err;
   }
+}
+
+export async function runTargetedNanoporeInWorker(
+  job: TargetedNanoporeJob,
+  onProgress?: (msg: PipelineProgressMsg) => void,
+): Promise<TargetedNanoporeOutcome> {
+  const a = ensureWorker();
+  await workerReady;
+  const progress = onProgress ? Comlink.proxy(onProgress) : undefined;
+  return a.runTargetedNanopore(job, progress);
 }
 
 /** Parse the analyzer's CSV blob inside the worker so the streaming pass

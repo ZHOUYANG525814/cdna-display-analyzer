@@ -59,6 +59,7 @@ async function loadConfig(): Promise<{ rounds: RoundConfigInput[]; settings: Dem
     adaptive: cfg.settings?.adaptive ?? true,
     filterStop: cfg.settings?.filter_stop ?? true,
     minMeanPhred: 20.0,
+    minMeanPhredCds: 20.0,
   };
   return { rounds, settings };
 }
@@ -122,7 +123,7 @@ describe.skipIf(!ENABLED)("TS vs WASM throughput (set RUN_BENCH=1)", () => {
     const { rounds, settings } = await loadConfig();
 
     // Load all reads (post-Q-filter) into memory once.
-    const reads: Uint8Array[] = [];
+    const reads: Array<{ seq: Uint8Array; qual: Uint8Array }> = [];
     const source = fileSource(FASTQ);
     const stream = await source.open();
     for await (const rec of readFastqRecords(
@@ -141,7 +142,7 @@ describe.skipIf(!ENABLED)("TS vs WASM throughput (set RUN_BENCH=1)", () => {
     )) {
       if (meanPhred(rec.qual) >= settings.minMeanPhred) {
         // Copy out so the underlying chunk can be released.
-        reads.push(rec.seq.slice());
+        reads.push({ seq: rec.seq.slice(), qual: rec.qual.slice() });
       }
     }
     console.log(`\n[micro] cached ${reads.length} post-Q reads`);
@@ -153,11 +154,12 @@ describe.skipIf(!ENABLED)("TS vs WASM throughput (set RUN_BENCH=1)", () => {
         ? new DemultiplexEngine(preprocessed, settings, { wasmScorer })
         : new DemultiplexEngine(preprocessed, settings);
       const t0 = performance.now();
-      for (const seq of reads) {
-        let reason = engine.processRead(seq);
+      for (const { seq, qual } of reads) {
+        let reason = engine.processRead(seq, qual);
         if (reason !== "assigned") {
           const rc = reverseComplementBytesToBytes(seq);
-          reason = engine.processRead(rc);
+          const rcQual = qual.slice().reverse();
+          reason = engine.processRead(rc, rcQual);
         }
         if (reason !== "assigned") engine.recordUnassigned(reason);
       }

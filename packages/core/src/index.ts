@@ -97,3 +97,66 @@ export {
   type MethodsRunParams,
   type ColumnDoc,
 } from "./methods.js";
+
+export {
+  doradoMeanQ,
+  parseDoradoHeaderQ,
+  resolveDoradoReadQ,
+  type DoradoReadQ,
+} from "./targeted-qscore.js";
+
+export {
+  normalizeReference,
+  resolveTargetSites,
+  isAllowedTargetDna,
+  type TargetDesign,
+  type TargetSiteInput,
+  type ResolvedTargetSite,
+  type TargetConfigValidation,
+} from "./targeted-types.js";
+
+export {
+  estimateReferenceOffset,
+  alignTargetedReference,
+  alignTargetedReferenceAscii,
+  type CigarCode,
+  type CigarOp,
+  type TargetedAlignOptions,
+  type TargetedAlignment,
+} from "./targeted-align.js";
+
+export {
+  projectTargetedEvents,
+  type TargetedSubstitution,
+  type TargetedInsertion,
+  type TargetedDeletion,
+  type TargetedVariantEvent,
+} from "./targeted-events.js";
+
+export {
+  callTargetSites,
+  buildTargetHaplotype,
+  buildProtectedMask,
+  type TargetSiteCallStatus,
+  type TargetSiteCall,
+  type TargetSiteCallSettings,
+} from "./targeted-caller.js";
+
+export {
+  evaluateTargetedQc,
+  type TargetedQcFailure,
+  type TargetedQcSettings,
+  type TargetedQcResult,
+} from "./targeted-qc.js";
+
+export {
+  runTargetedNanoporePipeline,
+  type TargetedPipelineSettings,
+  type TargetedPipelineRequest,
+  type TargetedPipelineProgress,
+  type TargetedPrimaryDropReason,
+  type TargetedFileStats,
+  type TargetedSiteRunStats,
+  type TargetedRoundRunStats,
+  type TargetedPipelineResult,
+} from "./targeted-pipeline.js";

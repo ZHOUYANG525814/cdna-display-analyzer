@@ -54,6 +54,9 @@ export interface NanoporeAnalyzerInput {
   /** Off by default — only emits haplotype CSV when the engine was configured
    *  with this on AND ≥2 sites are configured. */
   emitHaplotype: boolean;
+  /** Minimum first-round count required for Z/p/BH inference. Fitness is
+   * retained below the threshold, but inferential fields are blank. */
+  minBaselineCountToScore?: number;
 }
 
 export interface NanoporeAnalyzerRow {
@@ -96,7 +99,7 @@ export function runNanoporeAnalyzer(input: NanoporeAnalyzerInput): NanoporeAnaly
     perSiteRows.push(...aggregatePerSite(input, siteName, libraryMedianFitness));
   }
 
-  const perSiteColumns = buildPerSiteColumns(input.roundNames);
+  const perSiteColumns = buildPerSiteColumns(input.roundNames, input.minBaselineCountToScore != null);
   // serializeCsv's input type is tied to cDNA's AnalyzerRow shape, but it
   // only ever does column-by-name lookups, so the per-site rows (different
   // schema, same index-signature shape) work fine. Cast at the boundary.
@@ -108,7 +111,7 @@ export function runNanoporeAnalyzer(input: NanoporeAnalyzerInput): NanoporeAnaly
   let haplotypeCsvParts: string[] = [];
   if (wantHaplotype) {
     haplotypeRows = aggregateHaplotypes(input, libraryMedianFitness);
-    haplotypeColumns = buildHaplotypeColumns(input.roundNames);
+    haplotypeColumns = buildHaplotypeColumns(input.roundNames, input.minBaselineCountToScore != null);
     haplotypeCsvParts =
       haplotypeRows.length > 0
         ? serializeCsv(haplotypeRows as unknown as AnalyzerRow[], haplotypeColumns)
@@ -214,9 +217,19 @@ function aggregatePerSite(
 
     // Per-row SE / Z / p / Var (four-term Poisson δ-method).
     const pvals: number[] = [];
-    for (const row of rows) {
+    const eligibleIndices: number[] = [];
+    for (let rowIndex = 0; rowIndex < rows.length; rowIndex++) {
+      const row = rows[rowIndex]!;
       const cR = row[`Count_${round}`] as number;
       const c0 = c0Cache[String(row.Variant_AA)] ?? 0;
+      const eligible = c0 >= (input.minBaselineCountToScore ?? 0);
+      if (input.minBaselineCountToScore != null) row.Score_Eligible = eligible ? "yes" : "no";
+      if (!eligible) {
+        row[zCol] = "";
+        row[pCol] = "";
+        row[varCol] = "";
+        continue;
+      }
       const variance = varLog2WtRatio(cR, wtR, c0, wt0, PSEUDO);
       const se = seLog2WtRatio(cR, wtR, c0, wt0, PSEUDO);
       const safeSe = se > 1e-12 ? se : 1e-12;
@@ -227,11 +240,14 @@ function aggregatePerSite(
       row[pCol] = p;
       row[varCol] = variance;
       pvals.push(p);
+      eligibleIndices.push(rowIndex);
     }
 
     // Library median of Fitness_vs_WT at (site, round) → centered score.
     const fitValues: number[] = [];
-    for (const row of rows) fitValues.push(row[fitnessCol] as number);
+    for (const row of rows) {
+      if (input.minBaselineCountToScore == null || row.Score_Eligible === "yes") fitValues.push(row[fitnessCol] as number);
+    }
     const medFit = median(fitValues);
     libraryMedianFitness[`${siteName}:${round}`] = medFit;
     for (const row of rows) {
@@ -240,9 +256,8 @@ function aggregatePerSite(
 
     // BH-FDR per round, scoped within this site.
     const qvals = benjaminiHochberg(pvals);
-    for (let r = 0; r < rows.length; r++) {
-      rows[r]![qCol] = qvals[r]!;
-    }
+    for (const row of rows) row[qCol] = "";
+    for (let r = 0; r < eligibleIndices.length; r++) rows[eligibleIndices[r]!]![qCol] = qvals[r]!;
   }
 
   // Sort: Centered_Fitness of last round desc (Phase 6.16 — was Fitness_vs_WT;
@@ -340,9 +355,19 @@ function aggregateHaplotypes(
     const varCol = `Var_Fitness_${round}`;
 
     const pvals: number[] = [];
-    for (const row of rows) {
+    const eligibleIndices: number[] = [];
+    for (let rowIndex = 0; rowIndex < rows.length; rowIndex++) {
+      const row = rows[rowIndex]!;
       const cR = row[`Count_${round}`] as number;
       const c0 = row[`Count_${firstRound}`] as number;
+      const eligible = c0 >= (input.minBaselineCountToScore ?? 0);
+      if (input.minBaselineCountToScore != null) row.Score_Eligible = eligible ? "yes" : "no";
+      if (!eligible) {
+        row[zCol] = "";
+        row[pCol] = "";
+        row[varCol] = "";
+        continue;
+      }
       const variance = varLog2WtRatio(cR, wtR, c0, wt0, PSEUDO);
       const se = seLog2WtRatio(cR, wtR, c0, wt0, PSEUDO);
       const safeSe = se > 1e-12 ? se : 1e-12;
@@ -353,10 +378,13 @@ function aggregateHaplotypes(
       row[pCol] = p;
       row[varCol] = variance;
       pvals.push(p);
+      eligibleIndices.push(rowIndex);
     }
 
     const fitValues: number[] = [];
-    for (const row of rows) fitValues.push(row[fitnessCol] as number);
+    for (const row of rows) {
+      if (input.minBaselineCountToScore == null || row.Score_Eligible === "yes") fitValues.push(row[fitnessCol] as number);
+    }
     const medFit = median(fitValues);
     // Haplotype median keyed with `__haplotype__:<round>` so it's distinct
     // from per-site medians in the unified libraryMedianFitness record.
@@ -366,9 +394,8 @@ function aggregateHaplotypes(
     }
 
     const qvals = benjaminiHochberg(pvals);
-    for (let r = 0; r < rows.length; r++) {
-      rows[r]![qCol] = qvals[r]!;
-    }
+    for (const row of rows) row[qCol] = "";
+    for (let r = 0; r < eligibleIndices.length; r++) rows[eligibleIndices[r]!]![qCol] = qvals[r]!;
   }
 
   // Sort by Centered_Fitness of last round desc (Phase 6.16).
@@ -402,12 +429,13 @@ function pickDominant(dnaTotals: ReadonlyMap<string, number>): string {
 // Pval, NegLog10Pval, FDR_q) so net CSV width grows modestly. The
 // `computeRanks` helper used to fill Rank_* is no longer needed.
 
-function buildPerSiteColumns(roundNames: ReadonlyArray<string>): ColumnSpec[] {
+function buildPerSiteColumns(roundNames: ReadonlyArray<string>, includeEligibility: boolean): ColumnSpec[] {
   const cols: ColumnSpec[] = [
     { name: "Site", type: "string" },
     { name: "Variant_AA", type: "string" },
     { name: "Dominant_DNA", type: "string" },
   ];
+  if (includeEligibility) cols.push({ name: "Score_Eligible", type: "string" });
   for (const r of roundNames) cols.push({ name: `Count_${r}`, type: "int" });
   for (const r of roundNames) cols.push({ name: `RPM_${r}`, type: "float" });
   // Phase 6.16: dropped Enrich_Global_<r> and NegLog10Pval_Fitness_<r>.
@@ -432,11 +460,12 @@ function buildPerSiteColumns(roundNames: ReadonlyArray<string>): ColumnSpec[] {
   return cols;
 }
 
-function buildHaplotypeColumns(roundNames: ReadonlyArray<string>): ColumnSpec[] {
+function buildHaplotypeColumns(roundNames: ReadonlyArray<string>, includeEligibility: boolean): ColumnSpec[] {
   const cols: ColumnSpec[] = [
     { name: "Haplotype_AA", type: "string" },
     { name: "Haplotype_DNA", type: "string" },
   ];
+  if (includeEligibility) cols.push({ name: "Score_Eligible", type: "string" });
   for (const r of roundNames) cols.push({ name: `Count_${r}`, type: "int" });
   for (const r of roundNames) cols.push({ name: `RPM_${r}`, type: "float" });
   for (const r of roundNames) cols.push({ name: `Fitness_vs_WT_${r}`, type: "float" });

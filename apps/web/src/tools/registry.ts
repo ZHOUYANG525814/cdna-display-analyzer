@@ -5,8 +5,9 @@
 import type { Tool } from "./types";
 import { cdnaDisplayTool } from "./cdna-display";
 import { nanoporeSsmTool } from "./nanopore-ssm";
+import { nanoporeTargetedTool } from "./nanopore-targeted";
 
-export const tools: ReadonlyArray<Tool> = [cdnaDisplayTool, nanoporeSsmTool];
+export const tools: ReadonlyArray<Tool> = [cdnaDisplayTool, nanoporeSsmTool, nanoporeTargetedTool];
 export const DEFAULT_TOOL_ID = "cdna-display";
 
 export function toolById(id: string): Tool {

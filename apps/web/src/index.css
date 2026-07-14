@@ -58,6 +58,12 @@
     --secondary: 243 35% 97%;
     --accent: 243 35% 97%;
   }
+  :root[data-tool="nanopore-targeted"] {
+    --primary: 271 76% 53%;
+    --ring: 271 76% 53%;
+    --secondary: 270 40% 97%;
+    --accent: 270 40% 97%;
+  }
 
   * {
     @apply border-border;
