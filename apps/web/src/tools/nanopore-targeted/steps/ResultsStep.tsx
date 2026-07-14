@@ -20,4 +20,8 @@ export function ResultsStep() {
     <p className="text-xs text-muted-foreground">Statistical warning: without biological replicates, Z/p/FDR reflect count uncertainty under the Poisson approximation and generally underestimate total experimental uncertainty.</p>
   </div>;
 }
-function fmt(value: unknown): string { const n = Number(value); return Number.isFinite(n) ? n.toFixed(4) : "—"; }
+function fmt(value: unknown): string {
+  if (value == null || value === "") return "—";
+  const n = Number(value);
+  return Number.isFinite(n) ? n.toFixed(4) : "—";
+}
