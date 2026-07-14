@@ -1,8 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { buildFilterFunnelCsv, buildSiteCallabilityCsv, buildTargetedQcReport } from "../src/adapters/TargetedNanoporeExporter";
+import { TARGETED_EXPORT_FILES, buildFilterFunnelCsv, buildRunStats, buildSiteCallabilityCsv, buildTargetedQcReport } from "../src/adapters/TargetedNanoporeExporter";
 import type { TargetedNanoporeOutcome } from "../src/worker/types";
+import { buildTargetedSankeyData } from "../src/tools/nanopore-targeted/viz";
 
-const emptyDrops = { low_read_q: 1, partial_reference: 2, low_alignment_identity: 3, low_protected_identity: 4, protected_indel: 5, alignment_failed: 6, duplicate_read_id: 7, concatemer_or_chimera: 8, malformed_fastq: 9 };
+const emptyDrops = { low_read_q: 1, partial_reference: 2, low_alignment_identity: 3, low_protected_identity: 4, protected_indel: 5, alignment_failed: 6, duplicate_read_id: 7, concatemer_or_chimera: 8, malformed_fastq: 14 };
 const outcome = {
   roundNames: ["Round 0", "Round 1"], siteNames: ["site_01"], wtBySite: { site_01: "GCT" },
   statsByRound: Object.fromEntries(["Round 0", "Round 1"].map((round) => [round, {
@@ -10,16 +11,30 @@ const outcome = {
     qc_failures: { low_read_q: 1, partial_reference: 2, low_alignment_identity: 3, low_protected_identity: 4, protected_indel: 5 },
     primary_drop_reasons: { ...emptyDrops }, haplotype_passed_qc: 50,
     sites: { site_01: { anchor_found: 55, discard_roi_indel: 0, discard_low_q_roi: 0, discard_frameshift: 0, discard_stop_codon: 0, passed_qc: 55, wt_count: 40, callable_full: 50, callable_rescued: 5, low_quality: 2, target_indel: 3, not_covered: 4, ambiguous: 1, off_design: 2, stop_codon: 1 } },
-  }])), fileStats: [], libraryMedianFitness: {}, hitCounts: [], perSiteCsvBlob: null, haplotypeCsvBlob: null, exactCodonCsvBlob: null, exactHaplotypeCsvBlob: null, perSiteRowsPreview: [], haplotypeRowsPreview: [],
+  }])), fileStats: [], libraryMedianFitness: {}, hitCounts: [], perSiteCsvBlob: null, haplotypeCsvBlob: null, exactCodonCsvBlob: null, exactHaplotypeCsvBlob: null, perSiteRowsPreview: [], haplotypeRowsPreview: [], perSiteRowsForViz: [], exactCodonCounts: { "Round 0": { site_01: { GCT: 40 } } }, exactHaplotypeCounts: { "Round 0": {} }, haplotypeStatistics: [],
 } as TargetedNanoporeOutcome;
 
 const snapshot = { projectName: "audit", referenceSeq: "GCT".repeat(20), cdsStart: 1, cdsEnd: 60, cdsStrand: "+" as const, sites: [{ id: "s", name: "site_01", ntStart: 1 }], settings: { minReadQ: 10, minReferenceCoverage: .9, minAlignmentIdentity: .85, minProtectedIdentity: .95, maxProtectedIndelBases: 30, minTargetBaseQ: 15, minInputCountToScore: 10 }, reportHaplotypes: false, startedAt: null, finishedAt: null };
 
 describe("targeted Nanopore result artifacts", () => {
+  it("matches the NGS three-artifact download contract without losing DNA aggregates", () => {
+    expect(TARGETED_EXPORT_FILES.map(([name]) => name)).toEqual(["Master_Enrichment_Matrix.csv.gz", "run_stats.json", "QC_Summary_Report.txt"]);
+    const stats = buildRunStats(outcome, snapshot);
+    expect(stats.exactCodonCounts["Round 0"]!.site_01!.GCT).toBe(40);
+    expect(stats).toHaveProperty("siteCallability");
+    expect(stats).toHaveProperty("filterFunnel");
+  });
   it("exports exclusive and site-specific QC without dropping reason columns", () => {
     expect(buildFilterFunnelCsv(outcome)).toContain("low_alignment_identity");
     expect(buildSiteCallabilityCsv(outcome)).toContain("Target_Indel");
     expect(buildSiteCallabilityCsv(outcome)).toContain('"55","50","5"');
+  });
+  it("uses the exclusive funnel counters in the Sankey without inflating read flow", () => {
+    const sankey = buildTargetedSankeyData(outcome);
+    expect(sankey.links.filter((link) => link.source === 0).reduce((n, link) => n + link.value, 0)).toBe(200);
+    for (const roundNode of [1, 12]) {
+      expect(sankey.links.filter((link) => link.source === roundNode).reduce((n, link) => n + link.value, 0)).toBe(100);
+    }
   });
   it("documents substitution, indel, rescue and no-replicate semantics", () => {
     const report = buildTargetedQcReport(outcome, snapshot);

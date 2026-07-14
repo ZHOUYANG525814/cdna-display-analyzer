@@ -16,32 +16,18 @@ export interface TargetedExportSnapshot {
 }
 
 export const TARGETED_EXPORT_FILES = [
-  ["Master_Enrichment_Per_Site.csv.gz", "Primary amino-acid enrichment table with reused WT-normalized statistics"],
-  ["Exact_Codon_Counts.csv.gz", "Lossless exact codon counts and site-specific RPM, including synonymous/off-NNK/stop calls"],
-  ["Enrichment_Haplotypes.csv.gz", "Target-only amino-acid haplotype statistics (when enabled)"],
-  ["Exact_Haplotype_Counts.csv.gz", "Lossless exact target-DNA haplotype counts (when enabled)"],
-  ["filter_funnel.csv", "Exclusive whole-read drop reasons by round"],
-  ["site_callability.csv", "Full/rescued calls and every site-level non-callable reason"],
-  ["file_qc.csv", "Per-input-file throughput, alignment, full-QC and rescue totals"],
-  ["run_stats.json", "Machine-readable configuration, provenance and all QC counters"],
+  ["Master_Enrichment_Matrix.csv.gz", "Complete per-site amino-acid count, RPM, fitness, variance and FDR matrix"],
+  ["run_stats.json", "Machine-readable configuration, file QC, filter funnel, site callability and provenance"],
   ["QC_Summary_Report.txt", "Human-readable QC logic, abnormal-event handling, formulas and caveats"],
-  ["locked_config.json", "Reference/CDS/targets and effective thresholds needed to reproduce the run"],
 ] as const;
 
 export async function exportTargetedOutcome(outcome: TargetedNanoporeOutcome, snapshot: TargetedExportSnapshot): Promise<void> {
   const base = sanitize(snapshot.projectName || "nanopore_run");
   const downloads: Array<[Blob, string]> = [];
-  await addGzip(downloads, outcome.perSiteCsvBlob, `${base}_Master_Enrichment_Per_Site.csv.gz`);
-  await addGzip(downloads, outcome.exactCodonCsvBlob, `${base}_Exact_Codon_Counts.csv.gz`);
-  await addGzip(downloads, outcome.haplotypeCsvBlob, `${base}_Enrichment_Haplotypes.csv.gz`);
-  await addGzip(downloads, outcome.exactHaplotypeCsvBlob, `${base}_Exact_Haplotype_Counts.csv.gz`);
+  await addGzip(downloads, outcome.perSiteCsvBlob, `${base}_Master_Enrichment_Matrix.csv.gz`);
   downloads.push(
-    [textBlob(buildFilterFunnelCsv(outcome)), `${base}_filter_funnel.csv`],
-    [textBlob(buildSiteCallabilityCsv(outcome)), `${base}_site_callability.csv`],
-    [textBlob(buildFileQcCsv(outcome)), `${base}_file_qc.csv`],
     [jsonBlob(buildRunStats(outcome, snapshot)), `${base}_run_stats.json`],
     [textBlob(buildTargetedQcReport(outcome, snapshot), "text/plain;charset=utf-8"), `${base}_QC_Summary_Report.txt`],
-    [jsonBlob(buildLockedConfig(snapshot)), `${base}_locked_config.json`],
   );
   for (const [blob, name] of downloads) downloadBlob(blob, name);
 }
@@ -77,6 +63,11 @@ export function buildRunStats(outcome: TargetedNanoporeOutcome, snapshot: Target
     rounds: outcome.roundNames, sites: snapshot.sites, wtBySite: outcome.wtBySite,
     effectiveSettings: { ...snapshot.settings, reportHaplotypes: snapshot.reportHaplotypes, rescueFlankBases: 30, concatemerLengthRatio: 1.5 },
     statsByRound: outcome.statsByRound, fileStats: outcome.fileStats,
+    filterFunnel: outcome.roundNames.map((round) => ({ round, ...outcome.statsByRound[round]!.primary_drop_reasons })),
+    siteCallability: outcome.roundNames.flatMap((round) => outcome.siteNames.map((site) => ({ round, site, ...outcome.statsByRound[round]!.sites[site] }))),
+    exactCodonCounts: outcome.exactCodonCounts,
+    exactHaplotypeCounts: outcome.exactHaplotypeCounts,
+    haplotypeStatistics: outcome.haplotypeStatistics,
     libraryMedianFitness: outcome.libraryMedianFitness, hitCounts: outcome.hitCounts,
     statisticalModel: { pseudocount: 1, variance: "four-term Poisson delta method", pValue: "two-sided Wald z-test", fdr: "Benjamini-Hochberg per site/haplotype family", biologicalReplicatesModeled: false },
   };
@@ -104,7 +95,7 @@ export function buildTargetedQcReport(outcome: TargetedNanoporeOutcome, snapshot
     "Partial read: may rescue one site only when both 30-nt flanks are covered and pass protected identity. It cannot create a haplotype.",
     "Off-NNK and stop codon: retained in exact counts and site QC as design/base-calling diagnostics; not silently removed.", "",
     "--- 4. INTERPRETATION LIMITS ---",
-    "The primary enrichment table collapses synonymous codons to amino acids; Exact_Codon_Counts.csv.gz is the lossless DNA-level table.",
+    "The primary enrichment matrix collapses synonymous codons to amino acids. Lossless exact-codon counts, exact target haplotypes and haplotype statistics are retained under dedicated keys in run_stats.json.",
     "Round 0 threshold gates inference only. It does not delete raw counts or RPM.",
     "Without biological replicates, Var/Z/p/FDR describe Poisson counting uncertainty and usually underestimate total experimental uncertainty. Use them for prioritization, not replicate-level claims.",
     "Low WT depth makes every WT-normalized fitness at that site unstable; inspect wt_count and Var_Fitness before interpretation.", "",

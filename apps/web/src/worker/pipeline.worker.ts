@@ -403,6 +403,13 @@ const api = {
     for (const [round, value] of result.stats) statsByRound[round] = value;
     const wtBySite: Record<string, string> = {};
     for (const site of result.resolvedSites) wtBySite[site.name] = site.wtDna;
+    const exactCodonCounts: Record<string, Record<string, Record<string, number>>> = {};
+    const exactHaplotypeCounts: Record<string, Record<string, number>> = {};
+    for (const round of job.roundNames) {
+      exactCodonCounts[round] = {};
+      for (const site of result.resolvedSites) exactCodonCounts[round]![site.name] = Object.fromEntries(result.dnaCounters.get(round)?.get(site.name) ?? []);
+      exactHaplotypeCounts[round] = Object.fromEntries(result.haplotypeCounters.get(round) ?? []);
+    }
     const hitCounts: Array<{ label: string; q05: number; q01: number; total: number }> = [];
     for (const comparisonRound of job.roundNames.slice(1)) {
       const qColumn = `FDR_q_${comparisonRound}`;
@@ -434,6 +441,10 @@ const api = {
       exactHaplotypeCsvBlob: result.exactHaplotypeCsvParts.length ? new Blob(result.exactHaplotypeCsvParts, { type: "text/csv" }) : null,
       perSiteRowsPreview: result.analyzer.perSiteRows.slice(0, PREVIEW_ROWS),
       haplotypeRowsPreview: result.analyzer.haplotypeRows.slice(0, PREVIEW_ROWS),
+      perSiteRowsForViz: result.analyzer.perSiteRows,
+      exactCodonCounts,
+      exactHaplotypeCounts,
+      haplotypeStatistics: result.analyzer.haplotypeRows,
       statsByRound,
       fileStats: result.fileStats,
       roundNames: [...job.roundNames],

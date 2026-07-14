@@ -173,6 +173,14 @@ export interface TargetedNanoporeOutcome {
   exactHaplotypeCsvBlob: Blob | null;
   perSiteRowsPreview: NanoporeAnalyzerRow[];
   haplotypeRowsPreview: NanoporeAnalyzerRow[];
+  /** Complete per-site AA table is bounded by sites × genetic-code states
+   * (~21 each), so it is safe and useful for charts without reparsing CSV. */
+  perSiteRowsForViz: NanoporeAnalyzerRow[];
+  /** Lossless DNA-level aggregates are folded into run_stats.json so the
+   * browser exposes only the same three artifacts as the NGS workflow. */
+  exactCodonCounts: Record<string, Record<string, Record<string, number>>>;
+  exactHaplotypeCounts: Record<string, Record<string, number>>;
+  haplotypeStatistics: NanoporeAnalyzerRow[];
   statsByRound: Record<string, TargetedRoundRunStats>;
   fileStats: TargetedFileStats[];
   roundNames: string[];
