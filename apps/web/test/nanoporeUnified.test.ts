@@ -4,6 +4,7 @@ import { LocalFastqSource } from "../src/adapters/LocalFastqSource";
 import { AutoDecompressFastqSource } from "../src/adapters/AutoDecompressFastqSource";
 import { buildNanoporeDemoRounds, NANOPORE_DEMO_REFERENCE, NANOPORE_DEMO_SITES } from "../src/tools/nanopore-targeted/demo";
 import { NANOPORE_INPUT_LIMITS, peekNanoporeFastq, validateNanoporeDriveFile, validateNanoporeFileName } from "../src/tools/nanopore-targeted/inputValidation";
+import { aminoAcidTargetLabel } from "../src/tools/nanopore-targeted/targetNaming";
 
 describe("unified Nanopore input whitelist", () => {
   it.each([
@@ -67,7 +68,7 @@ describe("built-in Nanopore demo", () => {
     const result = await runTargetedNanoporePipeline({
       sources, sourceRoundIndices, roundNames: rounds.map((r) => `Round ${r.round}`),
       reference: NANOPORE_DEMO_REFERENCE,
-      sites: NANOPORE_DEMO_SITES.map((site) => ({ name: site.name, ntStart: site.ntStart, length: 3, design: "NNK" as const })),
+      sites: NANOPORE_DEMO_SITES.map((site) => ({ name: aminoAcidTargetLabel(NANOPORE_DEMO_REFERENCE, 1, site.ntStart).name, ntStart: site.ntStart, length: 3, design: "NNK" as const })),
       settings: { minReadQ: 10, minReferenceCoverage: 0.9, minAlignmentIdentity: 0.85, minProtectedIdentity: 0.95, maxProtectedIndelBases: 30, minTargetBaseQ: 15, minInputCountToScore: 5, reportHaplotypes: true },
     });
     expect(result.stats.get("Round 0")!.primary_drop_reasons.low_read_q).toBe(1);
@@ -76,18 +77,25 @@ describe("built-in Nanopore demo", () => {
     for (const [roundName, round] of result.stats) {
       expect(round.full_qc_passed + Object.values(round.primary_drop_reasons).reduce((a, b) => a + b, 0)).toBe(round.total_reads);
       for (const site of NANOPORE_DEMO_SITES) {
-        const exactTotal = [...result.dnaCounters.get(roundName)!.get(site.name)!.values()].reduce((a, b) => a + b, 0);
-        expect(exactTotal).toBe(round.sites[site.name]!.passed_qc);
+        const name = aminoAcidTargetLabel(NANOPORE_DEMO_REFERENCE, 1, site.ntStart).name;
+        const exactTotal = [...result.dnaCounters.get(roundName)!.get(name)!.values()].reduce((a, b) => a + b, 0);
+        expect(exactTotal).toBe(round.sites[name]!.passed_qc);
       }
     }
-    const double = result.analyzer.haplotypeRows.find((row) => row.Haplotype_DNA === "TGG_CTG");
+    const double = result.analyzer.haplotypeRows.find((row) => row.Combination_DNA === "TGG|CTG");
     expect(double).toBeTruthy();
+    expect(double!.Combination_AA).toBe("A21W|Y151L");
     expect(double!["Count_Round 2"]).toBe(100);
-    expect(double!["Fitness_vs_WT_Round 2"] as number).toBeGreaterThan(3);
+    expect(double!["Enrichment_Round 2_vs_Round 0"] as number).toBeGreaterThan(3);
+    const referenceCombination = result.analyzer.haplotypeRows.find((row) => row.Combination_AA === "A21A|Y151Y");
+    expect(referenceCombination).toBeTruthy();
+    expect(Number.isFinite(referenceCombination!["Enrichment_Round 2_vs_Round 0"])).toBe(true);
+    expect(referenceCombination!["Enrichment_Round 2_vs_Round 0"]).not.toBe(0);
     const exactCodons = result.exactCodonCsvParts.join("");
     const exactHaplotypes = result.exactHaplotypeCsvParts.join("");
     expect(exactCodons).toContain("Codon_DNA");
     expect(exactCodons).toContain("TGG");
-    expect(exactHaplotypes).toContain("TGG_CTG");
+    expect(exactCodons).toContain("Target,Codon_DNA");
+    expect(exactHaplotypes).toContain("A21W|Y151L");
   }, 20_000);
 });

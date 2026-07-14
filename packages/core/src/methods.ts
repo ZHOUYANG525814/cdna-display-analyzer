@@ -391,13 +391,18 @@ export const NANOPORE_METHODS: MethodsDocument = {
 export const TARGETED_NANOPORE_METHODS: MethodsDocument = {
   ...NANOPORE_METHODS,
   toolName: "Targeted Nanopore NNK Analyzer",
+  pvalueMethod: "Two-sided Wald z-test on each AA state's RPM enrichment, using a two-count Poisson delta-method SE",
+  fdrMethod: "Benjamini-Hochberg per (target, round), plus an independent AA-combination family per round",
+  centeringMethod: "Eligible-variant median independently per target or AA-combination family",
   sections: [
     {
       title: "Variant identity",
       columns: [
-        { name: "Site", summary: "User-confirmed codon position within the selected CDS; each site is an independent counting and FDR family." },
+        { name: "Target", summary: "Reference amino acid and CDS position, such as R233; each target is an independent counting and FDR family." },
         { name: "Variant_AA", summary: "Amino acid translated from a complete, high-quality three-base target call.", formula: "Variant_AA = translate(observed target codon)" },
-        { name: "Dominant_DNA", summary: "Most abundant synonymous codon for this amino acid across rounds. Every exact codon remains available in Exact_Codon_Counts.csv." },
+        { name: "Dominant_DNA", summary: "Most abundant synonymous codon for this amino acid across rounds. Every exact codon count remains in run_stats.json." },
+        { name: "Combination_AA", summary: "Complete linked target genotype in self-describing mutation notation, for example R233W|A304V|G331D." },
+        { name: "Combination_DNA", summary: "Dominant exact target-codon combination for the amino-acid combination, in the same locked target order." },
       ],
     },
     {
@@ -405,24 +410,45 @@ export const TARGETED_NANOPORE_METHODS: MethodsDocument = {
       columns: [
         {
           name: "Count_<r>",
-          summary: "Callable observations for this amino acid at this site in round <r>.",
+          summary: "Callable observations for this amino acid at this target in round <r>.",
           notes: [
             "One semiglobal affine-gap alignment to the full amplicon projects substitutions, insertions and deletions into reference coordinates.",
             "Target codons are masked from protected-reference identity, so intended substitutions do not fail whole-read QC.",
-            "A target-overlapping indel or low-Q/ambiguous target base makes only that site non-callable; other independently callable sites can still contribute.",
-            "Partial reads may contribute a site when both fixed 30-nt flanks pass protected identity. Rescued calls never enter multi-site haplotypes.",
+            "A target-overlapping indel or low-Q/ambiguous target base makes only that target non-callable; other independently callable targets can still contribute.",
+            "Partial reads may contribute one target when both fixed 30-nt flanks pass protected identity. Rescued calls never enter multi-target combinations.",
           ],
         },
-        { name: "RPM_<r>", summary: "Reads per million using that site's callable total as denominator.", formula: "RPM_<r> = Count_<r> / callable_<site,r> × 10⁶" },
+        { name: "RPM_<r>", summary: "Reads per million using that target's callable total as denominator.", formula: "RPM_<r> = Count_<r> / callable_<target,r> × 10⁶" },
       ],
     },
-    ...NANOPORE_METHODS.sections.slice(2),
+    {
+      title: "Round-to-baseline enrichment",
+      columns: [
+        { name: "Enrichment_<r>_vs_<first>", summary: "Raw log2 RPM fold-change for this amino-acid state or linked combination. Reference states are analyzed identically to every other state.", formula: "log₂[(RPM_<r> + 1) / (RPM_<first> + 1)]" },
+        { name: "Centered_Enrichment_<r>_vs_<first>", summary: "Raw enrichment minus the median among score-eligible rows in the same target or linked-combination family.", formula: "Enrichment − median(eligible Enrichment)", notes: ["Centering changes the zero point but not ranking. Under severe selection, inspect the reported median because centering can over-correct."] },
+      ],
+    },
+    {
+      title: "Statistical inference",
+      columns: [
+        { name: "Z_Enrichment_<r>_vs_<first>", summary: "Wald z-statistic for the raw enrichment.", formula: "Z = Enrichment / SE; SE = (1/ln 2)·√[1/(Count_<r>+1) + 1/(Count_<first>+1)]" },
+        { name: "Pval_Enrichment_<r>_vs_<first>", summary: "Two-sided z-test p-value for raw enrichment.", formula: "P = 2·(1 − Φ(|Z|))" },
+        { name: "FDR_q_<r>_vs_<first>", summary: "Benjamini-Hochberg q-value computed independently within each target, or across the linked-combination family.", notes: ["Reference and non-reference amino-acid states enter the same family with no special classification."] },
+        { name: "Var_Enrichment_<r>_vs_<first>", summary: "Two-count Poisson delta-method variance used for inverse-variance weighting.", formula: "(1/ln 2)²·[1/(Count_<r>+1) + 1/(Count_<first>+1)]" },
+      ],
+    },
   ],
+  mlRecipe: {
+    description: "The amino-acid matrices can feed downstream sequence or genotype models with count-aware weights.",
+    inputColumn: "Target + Variant_AA for independent effects, or Combination_AA for linked multi-target genotypes.",
+    targetColumn: "Centered_Enrichment_<lastRound>_vs_<firstRound>, centered within each target or the linked-combination family.",
+    weightExpr: "1 / Var_Enrichment_<lastRound>_vs_<firstRound>; weak counts are automatically down-weighted.",
+  },
   caveats: [
     "Pseudocount = 1.0 in every log2-based column; this choice mainly affects very-low-count variants.",
-    "Without biological replicates, the four-term Poisson variance captures counting uncertainty only and usually underestimates total experimental uncertainty. Z, p and FDR must not be presented as replicate-aware evidence.",
-    "Inference is blank when the Round 0 amino-acid count is below the locked threshold. Raw exact-codon and exact-haplotype counts are never removed by that threshold.",
-    "WT-normalized fitness becomes unstable when WT has very low counts. Inspect wt_count, Var_Fitness and the reported library median before interpreting a hit.",
+    "Without biological replicates, the two-count Poisson variance captures counting uncertainty only and usually underestimates total experimental uncertainty. Z, p and FDR must not be presented as replicate-aware evidence.",
+    "Inference is blank when the Round 0 amino-acid count is below the locked threshold. Raw exact-codon and exact-combination counts are never removed by that threshold.",
+    "Reference amino-acid states are ordinary rows and receive their own enrichment. No row is forced to zero by using it as a WT denominator.",
     "Protected-region substitutions and small indels are tolerated up to the locked QC limits. A systematic reference mismatch can therefore reduce yield and should be investigated from the QC funnel rather than reclassified as selection.",
     "Off-NNK and stop codons remain visible in counts as QC/design diagnostics; they are not silently discarded.",
   ],

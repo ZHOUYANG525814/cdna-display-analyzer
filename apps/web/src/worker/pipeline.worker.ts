@@ -411,13 +411,14 @@ const api = {
       exactHaplotypeCounts[round] = Object.fromEntries(result.haplotypeCounters.get(round) ?? []);
     }
     const hitCounts: Array<{ label: string; q05: number; q01: number; total: number }> = [];
+    const baselineRound = job.roundNames[0]!;
     for (const comparisonRound of job.roundNames.slice(1)) {
-      const qColumn = `FDR_q_${comparisonRound}`;
+      const qColumn = `FDR_q_${comparisonRound}_vs_${baselineRound}`;
       for (const site of result.resolvedSites) {
-        const rows = result.analyzer.perSiteRows.filter((row) => row.Site === site.name && row.Score_Eligible === "yes");
+        const rows = result.analyzer.perSiteRows.filter((row) => row.Target === site.name && row.Score_Eligible === "yes");
         const qValues = rows.map((row) => Number(row[qColumn])).filter(Number.isFinite);
         hitCounts.push({
-          label: `${site.name} @ ${comparisonRound} vs Round 0`,
+          label: `${site.name} @ ${comparisonRound} vs ${baselineRound}`,
           q05: qValues.filter((q) => q < 0.05).length,
           q01: qValues.filter((q) => q < 0.01).length,
           total: rows.length,
@@ -427,7 +428,7 @@ const api = {
       if (haplotypeRows.length) {
         const qValues = haplotypeRows.map((row) => Number(row[qColumn])).filter(Number.isFinite);
         hitCounts.push({
-          label: `target haplotype @ ${comparisonRound} vs Round 0`,
+          label: `target combination @ ${comparisonRound} vs ${baselineRound}`,
           q05: qValues.filter((q) => q < 0.05).length,
           q01: qValues.filter((q) => q < 0.01).length,
           total: haplotypeRows.length,
@@ -449,6 +450,7 @@ const api = {
       fileStats: result.fileStats,
       roundNames: [...job.roundNames],
       siteNames: result.resolvedSites.map((s) => s.name),
+      targets: result.resolvedSites.map((s) => ({ name: s.name, ntStart: s.ntStart, wtDna: s.wtDna, wtAa: s.wtAa })),
       wtBySite,
       libraryMedianFitness: result.analyzer.libraryMedianFitness,
       hitCounts,

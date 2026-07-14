@@ -5,13 +5,13 @@ import { buildTargetedSankeyData } from "../src/tools/nanopore-targeted/viz";
 
 const emptyDrops = { low_read_q: 1, partial_reference: 2, low_alignment_identity: 3, low_protected_identity: 4, protected_indel: 5, alignment_failed: 6, duplicate_read_id: 7, concatemer_or_chimera: 8, malformed_fastq: 14 };
 const outcome = {
-  roundNames: ["Round 0", "Round 1"], siteNames: ["site_01"], wtBySite: { site_01: "GCT" },
+  roundNames: ["Round 0", "Round 1"], siteNames: ["A1"], targets: [{ name: "A1", ntStart: 1, wtDna: "GCT", wtAa: "A" }], wtBySite: { A1: "GCT" },
   statsByRound: Object.fromEntries(["Round 0", "Round 1"].map((round) => [round, {
     total_reads: 100, duplicate_read_ids: 7, aligned: 60, full_qc_passed: 50,
     qc_failures: { low_read_q: 1, partial_reference: 2, low_alignment_identity: 3, low_protected_identity: 4, protected_indel: 5 },
     primary_drop_reasons: { ...emptyDrops }, haplotype_passed_qc: 50,
-    sites: { site_01: { anchor_found: 55, discard_roi_indel: 0, discard_low_q_roi: 0, discard_frameshift: 0, discard_stop_codon: 0, passed_qc: 55, wt_count: 40, callable_full: 50, callable_rescued: 5, low_quality: 2, target_indel: 3, not_covered: 4, ambiguous: 1, off_design: 2, stop_codon: 1 } },
-  }])), fileStats: [], libraryMedianFitness: {}, hitCounts: [], perSiteCsvBlob: null, haplotypeCsvBlob: null, exactCodonCsvBlob: null, exactHaplotypeCsvBlob: null, perSiteRowsPreview: [], haplotypeRowsPreview: [], perSiteRowsForViz: [], exactCodonCounts: { "Round 0": { site_01: { GCT: 40 } } }, exactHaplotypeCounts: { "Round 0": {} }, haplotypeStatistics: [],
+    sites: { A1: { anchor_found: 55, discard_roi_indel: 0, discard_low_q_roi: 0, discard_frameshift: 0, discard_stop_codon: 0, passed_qc: 55, wt_count: 40, callable_full: 50, callable_rescued: 5, low_quality: 2, target_indel: 3, not_covered: 4, ambiguous: 1, off_design: 2, stop_codon: 1 } },
+  }])), fileStats: [], libraryMedianFitness: {}, hitCounts: [], perSiteCsvBlob: null, haplotypeCsvBlob: null, exactCodonCsvBlob: null, exactHaplotypeCsvBlob: null, perSiteRowsPreview: [], haplotypeRowsPreview: [], perSiteRowsForViz: [], exactCodonCounts: { "Round 0": { A1: { GCT: 40 } } }, exactHaplotypeCounts: { "Round 0": {} }, haplotypeStatistics: [],
 } as TargetedNanoporeOutcome;
 
 const snapshot = { projectName: "audit", referenceSeq: "GCT".repeat(20), cdsStart: 1, cdsEnd: 60, cdsStrand: "+" as const, sites: [{ id: "s", name: "site_01", ntStart: 1 }], settings: { minReadQ: 10, minReferenceCoverage: .9, minAlignmentIdentity: .85, minProtectedIdentity: .95, maxProtectedIndelBases: 30, minTargetBaseQ: 15, minInputCountToScore: 10 }, reportHaplotypes: false, startedAt: null, finishedAt: null };
@@ -20,11 +20,14 @@ describe("targeted Nanopore result artifacts", () => {
   it("matches the NGS three-artifact download contract without losing DNA aggregates", () => {
     expect(TARGETED_EXPORT_FILES.map(([name]) => name)).toEqual(["Master_Enrichment_Matrix.csv.gz", "Combination_Enrichment_Matrix.csv.gz", "run_stats.json", "QC_Summary_Report.txt"]);
     const stats = buildRunStats(outcome, snapshot);
-    expect(stats.exactCodonCounts["Round 0"]!.site_01!.GCT).toBe(40);
-    expect(stats).toHaveProperty("siteCallability");
+    expect(stats.exactCodonCounts["Round 0"]!.A1!.GCT).toBe(40);
+    expect(stats).toHaveProperty("targetCallability");
+    expect(stats).toHaveProperty("exactCombinationCounts");
+    expect(stats.statsByRound["Round 0"]).toHaveProperty("targets.A1");
+    expect(stats.statsByRound["Round 0"]).not.toHaveProperty("sites");
     expect(stats).toHaveProperty("filterFunnel");
   });
-  it("exports exclusive and site-specific QC without dropping reason columns", () => {
+  it("exports exclusive and target-specific QC without dropping reason columns", () => {
     expect(buildFilterFunnelCsv(outcome)).toContain("low_alignment_identity");
     expect(buildSiteCallabilityCsv(outcome)).toContain("Target_Indel");
     expect(buildSiteCallabilityCsv(outcome)).toContain('"55","50","5"');
@@ -41,9 +44,9 @@ describe("targeted Nanopore result artifacts", () => {
     expect(report).toContain("Substitution inside a target");
     expect(report).toContain("Insertion/deletion overlapping a target codon");
     expect(report).toContain("Partial read");
-    expect(report).toContain("MULTI-SITE COMBINATION ENRICHMENT");
-    expect(report).toContain("F_L_W");
+    expect(report).toContain("MULTI-TARGET COMBINATION ENRICHMENT");
+    expect(report).toContain("R233W|A304V|G331D");
     expect(report).toContain("Without biological replicates");
-    expect(report).toContain("four-term Poisson");
+    expect(report).toContain("two-count Poisson");
   });
 });

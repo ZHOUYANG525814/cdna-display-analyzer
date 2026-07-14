@@ -22,8 +22,8 @@ export function buildTargetedSankeyData(outcome: TargetedNanoporeOutcome): { nod
   return { nodes, links };
 }
 
-/** Adapt the targeted WT-normalized table to the shared NGS chart contract.
- * `peptide` includes the site label so points from distinct site-scoped FDR
+/** Adapt the targeted round-to-baseline enrichment table to the shared NGS chart contract.
+ * `peptide` includes the target label so points from distinct target-scoped FDR
  * families remain identifiable. */
 export function targetedRowsToChartRows(rows: ReadonlyArray<NanoporeAnalyzerRow>, rounds: ReadonlyArray<string>): PeptideRecord[] {
   return rows.map((row) => {
@@ -36,15 +36,16 @@ export function targetedRowsToChartRows(rows: ReadonlyArray<NanoporeAnalyzerRow>
       rpm[round] = finite(row[`RPM_${round}`]);
       if (i > 0) {
         const prev = rounds[i - 1]!;
+        const first = rounds[0]!;
         stepwise[round] = Math.log2((rpm[round]! + 1) / (rpm[prev]! + 1));
-        centered[round] = finite(row[`Centered_Fitness_${round}`]);
-        pval[round] = finite(row[`Pval_Fitness_${round}`], 1);
-        fdr[round] = finite(row[`FDR_q_${round}`], 1);
-        variance[round] = finite(row[`Var_Fitness_${round}`], Number.NaN);
+        centered[round] = finite(row[`Centered_Enrichment_${round}_vs_${first}`]);
+        pval[round] = finite(row[`Pval_Enrichment_${round}_vs_${first}`], 1);
+        fdr[round] = finite(row[`FDR_q_${round}_vs_${first}`], 1);
+        variance[round] = finite(row[`Var_Enrichment_${round}_vs_${first}`], Number.NaN);
       }
     }
     return {
-      peptide: `${String(row.Site)}:${String(row.Variant_AA)}`,
+      peptide: `${String(row.Target)}:${String(row.Variant_AA)}`,
       gc: 0, dominantDna: String(row.Dominant_DNA ?? ""), count, rpm,
       stepwise, centered, pval, fdr, variance,
     };

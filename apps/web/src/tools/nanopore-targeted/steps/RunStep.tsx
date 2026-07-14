@@ -5,6 +5,7 @@ import { Progress } from "@/components/ui/progress";
 import { useTargetedNanoporeStore } from "@/state/useTargetedNanoporeStore";
 import { DriveAuthProvider } from "@/adapters/DriveAuthProvider";
 import { runTargetedNanoporeInWorker } from "@/worker/workerClient";
+import { aminoAcidTargetLabel } from "../targetNaming";
 
 const CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID as string | undefined;
 
@@ -30,7 +31,7 @@ export function RunStep() {
         localFiles, driveFiles, ...(driveToken ? { driveToken } : {}),
         sourceRoundIndices: [...localRounds, ...driveRounds],
         roundNames: s.rounds.map((r) => `Round ${r.round}`), reference: s.referenceSeq,
-        sites: s.sites.map((site) => ({ name: site.name, ntStart: site.ntStart, length: 3, design: "NNK" as const })),
+        sites: s.sites.map((site) => ({ name: aminoAcidTargetLabel(s.referenceSeq, s.cdsStart, site.ntStart).name, ntStart: site.ntStart, length: 3, design: "NNK" as const })),
         settings: { ...s.settings, reportHaplotypes: s.sites.length >= 2 },
       }, (p) => setProgress((old) => ({ ...old, [p.sourceIndex]: { bytes: p.bytesProcessed, total: p.totalBytes, reads: p.recordsProcessed, name: p.fileName } })));
       s.setRunState({ status: "done", outcome, finishedAt: Date.now() });

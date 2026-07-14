@@ -14,13 +14,13 @@ export function TargetSiteSequenceLogo({ rows, roundNames, siteNames }: Props) {
   const visibleSites = siteNames.slice(0, MAX_SITES);
   const panels = useMemo(() => roundNames.map((round) => ({ round, columns: buildColumns(rows, round, visibleSites) })), [rows, roundNames, visibleSites.join("|")]);
   if (!rows.length) return <div className="rounded-md border border-dashed p-8 text-center text-sm text-muted-foreground">No callable amino-acid counts are available for a sequence logo.</div>;
-  return <div className="space-y-5">{panels.map((panel) => <div key={panel.round}><div className="mb-2 flex justify-between text-xs"><span className="font-medium">{panel.round}</span><span className="text-muted-foreground">read-count weighted · {visibleSites.length} target sites</span></div><ChartPanel filename={`nanopore_target_logo_${panel.round}`}><Logo columns={panel.columns} /></ChartPanel></div>)}{siteNames.length > MAX_SITES && <p className="text-xs text-muted-foreground">Logo display is capped at the first {MAX_SITES} sites for browser safety; the master matrix contains all sites.</p>}<p className="text-xs text-muted-foreground">Letter height = amino-acid frequency × information content. Unlike a whole-protein NGS logo, each column is one user-confirmed target codon.</p></div>;
+  return <div className="space-y-5">{panels.map((panel) => <div key={panel.round}><div className="mb-2 flex justify-between text-xs"><span className="font-medium">{panel.round}</span><span className="text-muted-foreground">read-count weighted · {visibleSites.length} targets</span></div><ChartPanel filename={`nanopore_target_logo_${panel.round}`}><Logo columns={panel.columns} /></ChartPanel></div>)}{siteNames.length > MAX_SITES && <p className="text-xs text-muted-foreground">Logo display is capped at the first {MAX_SITES} targets for browser safety; the master matrix contains all targets.</p>}<p className="text-xs text-muted-foreground">Letter height = amino-acid frequency × information content. Unlike a whole-protein NGS logo, each column is one user-confirmed target codon.</p></div>;
 }
 
 function buildColumns(rows: ReadonlyArray<NanoporeAnalyzerRow>, round: string, sites: ReadonlyArray<string>): Column[] {
   return sites.map((site) => {
     const counts = new Map<string, number>(); let total = 0;
-    for (const row of rows) if (row.Site === site) { const aa = String(row.Variant_AA); const count = Math.max(0, Number(row[`Count_${round}`]) || 0); counts.set(aa, (counts.get(aa) ?? 0) + count); total += count; }
+    for (const row of rows) if (row.Target === site) { const aa = String(row.Variant_AA); const count = Math.max(0, Number(row[`Count_${round}`]) || 0); counts.set(aa, (counts.get(aa) ?? 0) + count); total += count; }
     let entropy = 0; for (const count of counts.values()) if (count > 0 && total > 0) { const f = count / total; entropy -= f * Math.log2(f); }
     const information = total ? Math.max(0, MAX_BITS - entropy) : 0;
     const letters = [...counts].filter(([, count]) => count > 0).map(([aa, count]) => ({ aa, bits: count / total * information })).sort((a, b) => a.bits - b.bits);

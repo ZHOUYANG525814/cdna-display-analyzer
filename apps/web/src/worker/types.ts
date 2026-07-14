@@ -185,6 +185,7 @@ export interface TargetedNanoporeOutcome {
   fileStats: TargetedFileStats[];
   roundNames: string[];
   siteNames: string[];
+  targets: Array<{ name: string; ntStart: number; wtDna: string; wtAa: string | null }>;
   wtBySite: Record<string, string>;
   libraryMedianFitness: Record<string, number>;
   hitCounts: Array<{ label: string; q05: number; q01: number; total: number }>;

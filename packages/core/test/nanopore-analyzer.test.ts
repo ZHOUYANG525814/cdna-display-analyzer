@@ -271,3 +271,29 @@ describe("runNanoporeAnalyzer — CSV serialization", () => {
     expect(lines[lines.length - 1]).toBe("");
   });
 });
+
+describe("runNanoporeAnalyzer — targeted AA display", () => {
+  it("formats a 12-target linked genotype without anonymous site labels", () => {
+    const names = Array.from({ length: 12 }, (_, index) => `A${index + 1}`);
+    const joined = names.map(() => "GCT").join("_");
+    const sites = names.map((name) => ({ name, wtDna: "GCT" }));
+    const roundStats = (count: number): NanoporeRoundStats => ({
+      sites: Object.fromEntries(names.map((name) => [name, {
+        anchor_found: count, discard_roi_indel: 0, discard_low_q_roi: 0,
+        discard_frameshift: 0, discard_stop_codon: 0, passed_qc: count, wt_count: count,
+      }])),
+      haplotype_passed_qc: count,
+    });
+    const dnaFor = (count: number) => new Map(names.map((name) => [name, new Map([["GCT", count]])]));
+    const out = runNanoporeAnalyzer({
+      roundNames: ["Round 0", "Round 1"], siteNames: names, sites,
+      dnaCounters: new Map([["Round 0", dnaFor(10)], ["Round 1", dnaFor(20)]]),
+      haplotypeCounters: new Map([["Round 0", new Map([[joined, 10]])], ["Round 1", new Map([[joined, 20]])]]),
+      stats: new Map([["Round 0", roundStats(10)], ["Round 1", roundStats(20)]]),
+      emitHaplotype: true, minBaselineCountToScore: 1, displayMode: "targeted-aa",
+    });
+    expect(out.haplotypeRows[0]!.Combination_AA).toBe(names.map((name) => `${name}A`).join("|"));
+    expect(out.haplotypeColumns.map((column) => column.name).slice(0, 2)).toEqual(["Combination_AA", "Combination_DNA"]);
+    expect(out.haplotypeCsvParts.join("")).not.toContain("site_");
+  });
+});

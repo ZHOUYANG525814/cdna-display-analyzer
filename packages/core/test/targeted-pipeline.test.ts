@@ -24,7 +24,7 @@ function mutate(codon: string): string { return REF.slice(0, TARGET - 1) + codon
 function rc(seq: string): string { return [...seq].reverse().map((x) => ({ A: "T", C: "G", G: "C", T: "A" }[x]!)).join(""); }
 
 describe("runTargetedNanoporePipeline", () => {
-  it("merges shards, removes duplicate IDs, handles reverse reads, and computes Round-0 fitness", async () => {
+  it("merges shards, removes duplicate IDs, handles reverse reads, and enriches every AA state including reference", async () => {
     const r0a = Array.from({ length: 10 }, (_, i) => record(`w${i}`, REF)).join("") + record("mut0", mutate("TGG"));
     const r0b = record("w0", REF) + record("rev", rc(mutate("TGG")));
     const r1 = record("w1x", REF) + Array.from({ length: 10 }, (_, i) => record(`m${i}`, mutate("TGG"))).join("");
@@ -38,8 +38,11 @@ describe("runTargetedNanoporePipeline", () => {
     expect(result.dnaCounters.get("Round 0")!.get("site_01")!.get("TGG")).toBe(2);
     expect(result.dnaCounters.get("Round 1")!.get("site_01")!.get("TGG")).toBe(10);
     const trp = result.analyzer.perSiteRows.find((x) => x.Variant_AA === "W")!;
-    expect(trp["Fitness_vs_WT_Round 1"] as number).toBeGreaterThan(4);
+    expect(trp["Enrichment_Round 1_vs_Round 0"] as number).toBeGreaterThan(2);
     expect(trp.Score_Eligible).toBe("yes");
+    const referenceAla = result.analyzer.perSiteRows.find((x) => x.Variant_AA === "A")!;
+    expect(referenceAla["Enrichment_Round 1_vs_Round 0"] as number).toBeLessThan(-2);
+    expect(referenceAla["Enrichment_Round 1_vs_Round 0"]).not.toBe(0);
   });
 
   it("rescues a locally high-quality target from a partial read without creating a haplotype", async () => {

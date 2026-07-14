@@ -174,7 +174,9 @@ export async function runTargetedNanoporePipeline(req: TargetedPipelineRequest):
         if ((!qc.passed && !rescued) || !call.codonCallable || call.observedDna == null) continue;
         ss.anchor_found++; ss.passed_qc++;
         if (rescued) { ss.callable_rescued++; perFile.rescuedSiteCalls++; } else ss.callable_full++;
-        if (call.status === "wt") ss.wt_count++;
+        // The primary table is AA-level, so WT depth must include synonymous
+        // codons translating to the reference amino acid.
+        if (call.observedAa === site.wtAa) ss.wt_count++;
         const counter = dnaCounters.get(round)!.get(site.name)!;
         counter.set(call.observedDna, (counter.get(call.observedDna) ?? 0) + 1);
       }
@@ -194,6 +196,7 @@ export async function runTargetedNanoporePipeline(req: TargetedPipelineRequest):
     roundNames: req.roundNames, siteNames: sites.map((s) => s.name), dnaCounters, haplotypeCounters, stats,
     sites: sites.map((s) => ({ name: s.name, wtDna: s.wtDna })), emitHaplotype: req.settings.reportHaplotypes,
     minBaselineCountToScore: req.settings.minInputCountToScore,
+    displayMode: "targeted-aa",
   });
   const exactCodonCsvParts = buildExactCodonCsv(req.roundNames, sites, dnaCounters, stats);
   const exactHaplotypeCsvParts = req.settings.reportHaplotypes
@@ -213,7 +216,7 @@ function buildExactCodonCsv(
     for (const round of rounds) for (const dna of counters.get(round)?.get(site.name)?.keys() ?? []) observed.add(dna);
     for (const dna of [...observed].sort()) {
       const row: Record<string, RowValue> = {
-        Site: site.name, Codon_DNA: dna, Variant_AA: translateDna(dna), Is_WT: dna === site.wtDna,
+        Target: site.name, Codon_DNA: dna, Variant_AA: translateDna(dna),
         NNK_Compatible: /^[ACGT][ACGT][GT]$/.test(dna),
       };
       for (const round of rounds) {
@@ -226,8 +229,8 @@ function buildExactCodonCsv(
     }
   }
   const columns: ColumnSpec[] = [
-    { name: "Site", type: "string" }, { name: "Codon_DNA", type: "string" },
-    { name: "Variant_AA", type: "string" }, { name: "Is_WT", type: "bool" },
+    { name: "Target", type: "string" }, { name: "Codon_DNA", type: "string" },
+    { name: "Variant_AA", type: "string" },
     { name: "NNK_Compatible", type: "bool" },
     ...rounds.flatMap((round) => ([
       { name: `Count_${round}`, type: "int" as const },
@@ -247,9 +250,8 @@ function buildExactHaplotypeCsv(
   for (const round of rounds) for (const dna of counters.get(round)?.keys() ?? []) observed.add(dna);
   const rows: AnalyzerRow[] = [...observed].sort().map((dna) => {
     const row: Record<string, RowValue> = {
-      Haplotype_DNA: dna,
-      Haplotype_AA: dna.split("_").map(translateDna).join("_"),
-      Is_WT: dna === sites.map((site) => site.wtDna).join("_"),
+      Combination_AA: sites.map((site, index) => `${site.name}${translateDna(dna.split("_")[index] ?? "")}`).join("|"),
+      Combination_DNA: dna.replaceAll("_", "|"),
     };
     for (const round of rounds) {
       const count = counters.get(round)?.get(dna) ?? 0;
@@ -260,8 +262,7 @@ function buildExactHaplotypeCsv(
     return row as AnalyzerRow;
   });
   const columns: ColumnSpec[] = [
-    { name: "Haplotype_DNA", type: "string" }, { name: "Haplotype_AA", type: "string" },
-    { name: "Is_WT", type: "bool" },
+    { name: "Combination_AA", type: "string" }, { name: "Combination_DNA", type: "string" },
     ...rounds.flatMap((round) => ([
       { name: `Count_${round}`, type: "int" as const },
       { name: `RPM_${round}`, type: "float" as const },
