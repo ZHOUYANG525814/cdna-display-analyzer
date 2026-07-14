@@ -119,12 +119,17 @@ export {
 
 export {
   estimateReferenceOffset,
+  estimateReferenceOffsetIndexed,
+  createTargetedReferenceSeedIndex,
   alignTargetedReference,
+  alignTargetedReferenceWithEstimate,
   alignTargetedReferenceAscii,
   type CigarCode,
   type CigarOp,
   type TargetedAlignOptions,
   type TargetedAlignment,
+  type TargetedDiagonalEstimate,
+  type TargetedReferenceSeedIndex,
 } from "./targeted-align.js";
 
 export {

@@ -5,7 +5,12 @@ import { runNanoporeAnalyzer, type NanoporeAnalyzerOutput } from "./nanopore-ana
 import { serializeCsv, type AnalyzerRow, type ColumnSpec, type RowValue } from "./analyzer.js";
 import { translateDna } from "./dna.js";
 import type { NanoporeRoundStats, NanoporeSiteStats } from "./nanopore.js";
-import { alignTargetedReference, estimateReferenceOffset, type TargetedAlignment } from "./targeted-align.js";
+import {
+  alignTargetedReferenceWithEstimate,
+  createTargetedReferenceSeedIndex,
+  estimateReferenceOffsetIndexed,
+  type TargetedAlignment,
+} from "./targeted-align.js";
 import { buildProtectedMask, buildTargetHaplotype, callTargetSites } from "./targeted-caller.js";
 import { evaluateTargetedQc, type TargetedQcFailure, type TargetedQcSettings } from "./targeted-qc.js";
 import { resolveDoradoReadQ } from "./targeted-qscore.js";
@@ -79,6 +84,7 @@ export async function runTargetedNanoporePipeline(req: TargetedPipelineRequest):
   if (req.roundNames.length < 2 || req.roundNames.some((name, i) => name !== `Round ${i}`)) throw new Error("Rounds must be consecutive from Round 0.");
   const { reference: refString, sites } = resolveTargetSites(req.reference, req.sites);
   const reference = ENC.encode(refString);
+  const seedIndex = createTargetedReferenceSeedIndex(reference);
   const protectedMask = buildProtectedMask(reference.length, sites);
   const dnaCounters = new Map<string, Map<string, Map<string, number>>>();
   const haplotypeCounters = new Map<string, Map<string, number>>();
@@ -143,13 +149,13 @@ export async function runTargetedNanoporePipeline(req: TargetedPipelineRequest):
       let alignment: TargetedAlignment;
       try {
         const rc = rcInto(seq, new Uint8Array(seq.length));
-        const fwSeeds = estimateReferenceOffset(reference, seq).hits;
-        const rcSeeds = estimateReferenceOffset(reference, rc).hits;
-        if (rcSeeds > fwSeeds) { seq = rc; qual = reverseInto(rec.qual, new Uint8Array(rec.qual.length)); }
-        alignment = alignTargetedReference(reference, seq);
-        if (fwSeeds === rcSeeds) {
+        const fwEstimate = estimateReferenceOffsetIndexed(seedIndex, seq);
+        const rcEstimate = estimateReferenceOffsetIndexed(seedIndex, rc);
+        if (rcEstimate.hits > fwEstimate.hits) { seq = rc; qual = reverseInto(rec.qual, new Uint8Array(rec.qual.length)); }
+        alignment = alignTargetedReferenceWithEstimate(reference, seq, rcEstimate.hits > fwEstimate.hits ? rcEstimate : fwEstimate);
+        if (fwEstimate.hits === rcEstimate.hits) {
           const otherSeq = rcInto(seq, new Uint8Array(seq.length));
-          const other = alignTargetedReference(reference, otherSeq);
+          const other = alignTargetedReferenceWithEstimate(reference, otherSeq, rcEstimate);
           if (other.score > alignment.score) { seq = otherSeq; qual = reverseInto(qual, new Uint8Array(qual.length)); alignment = other; }
         }
       } catch {

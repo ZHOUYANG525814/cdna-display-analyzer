@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
   alignTargetedReferenceAscii,
+  alignTargetedReference,
+  alignTargetedReferenceWithEstimate,
+  createTargetedReferenceSeedIndex,
   estimateReferenceOffset,
+  estimateReferenceOffsetIndexed,
 } from "../src/targeted-align.js";
 import { projectTargetedEvents } from "../src/targeted-events.js";
 
@@ -51,6 +55,17 @@ describe("targeted full-reference alignment", () => {
     expect(estimate.hits).toBeGreaterThan(0);
   });
 
+  it("reuses a reference seed index without changing any alignment field", () => {
+    const ref = ENC.encode("ACGTCAGTACGATTCGATGCTAGCATCG");
+    const read = ENC.encode("AAAACGTCAGTAGGATTCGATGCTAGCATCGTT");
+    const options = { seedK: 7, initialBand: 4, maxBand: 32 };
+    const legacy = alignTargetedReference(ref, read, options);
+    const index = createTargetedReferenceSeedIndex(ref, options.seedK);
+    const estimate = estimateReferenceOffsetIndexed(index, read);
+    expect(estimate).toEqual(estimateReferenceOffset(ref, read, options.seedK));
+    expect(alignTargetedReferenceWithEstimate(ref, read, estimate, options)).toEqual(legacy);
+  });
+
   it("widens the band when traceback reaches the initial edge", () => {
     const ref = "ACGTCAGTACGATTCGATGCTAGCATCG";
     const read = "AAA" + ref.slice(0, 10) + "GGGGGG" + ref.slice(10) + "TTT";
@@ -60,4 +75,3 @@ describe("targeted full-reference alignment", () => {
     expect(aln.referenceCoverage).toBe(1);
   });
 });
-

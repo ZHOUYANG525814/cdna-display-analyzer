@@ -58,9 +58,54 @@ const DEFAULTS = Object.freeze({
   maxBand: 192,
 });
 
-interface DiagonalEstimate {
+export interface TargetedDiagonalEstimate {
   offset: number;
   hits: number;
+}
+
+/** Immutable reference-side k-mer index. Build once per run and reuse for
+ * every forward/reverse read query; the reference never changes mid-run. */
+export interface TargetedReferenceSeedIndex {
+  readonly referenceLength: number;
+  readonly k: number;
+  readonly uniqueKmers: ReadonlyMap<number, number>;
+}
+
+export function createTargetedReferenceSeedIndex(
+  reference: Uint8Array,
+  k: number = DEFAULTS.seedK,
+): TargetedReferenceSeedIndex {
+  const refKmers = new Map<number, number>();
+  if (k >= 3 && k <= 15 && reference.length >= k) {
+    for (let i = 0; i + k <= reference.length; i++) {
+      const key = encodeKmer(reference, i, k);
+      if (key < 0) continue;
+      refKmers.set(key, refKmers.has(key) ? -1 : i);
+    }
+  }
+  return { referenceLength: reference.length, k, uniqueKmers: refKmers };
+}
+
+export function estimateReferenceOffsetIndexed(
+  index: TargetedReferenceSeedIndex,
+  read: Uint8Array,
+): TargetedDiagonalEstimate {
+  const { k, referenceLength } = index;
+  if (k < 3 || k > 15 || referenceLength < k || read.length < k) {
+    return { offset: Math.max(0, Math.floor((read.length - referenceLength) / 2)), hits: 0 };
+  }
+  const offsets: number[] = [];
+  for (let j = 0; j + k <= read.length; j++) {
+    const key = encodeKmer(read, j, k);
+    if (key < 0) continue;
+    const refPos = index.uniqueKmers.get(key);
+    if (refPos != null && refPos >= 0) offsets.push(j - refPos);
+  }
+  if (offsets.length === 0) {
+    return { offset: Math.max(0, Math.floor((read.length - referenceLength) / 2)), hits: 0 };
+  }
+  offsets.sort((a, b) => a - b);
+  return { offset: offsets[Math.floor(offsets.length / 2)]!, hits: offsets.length };
 }
 
 /** Estimate readPos-referencePos from exact k-mers unique in the reference. */
@@ -68,29 +113,8 @@ export function estimateReferenceOffset(
   reference: Uint8Array,
   read: Uint8Array,
   k: number = DEFAULTS.seedK,
-): DiagonalEstimate {
-  if (k < 3 || k > 15 || reference.length < k || read.length < k) {
-    return { offset: Math.max(0, Math.floor((read.length - reference.length) / 2)), hits: 0 };
-  }
-  const refKmers = new Map<number, number>();
-  for (let i = 0; i + k <= reference.length; i++) {
-    const key = encodeKmer(reference, i, k);
-    if (key < 0) continue;
-    refKmers.set(key, refKmers.has(key) ? -1 : i);
-  }
-
-  const offsets: number[] = [];
-  for (let j = 0; j + k <= read.length; j++) {
-    const key = encodeKmer(read, j, k);
-    if (key < 0) continue;
-    const refPos = refKmers.get(key);
-    if (refPos != null && refPos >= 0) offsets.push(j - refPos);
-  }
-  if (offsets.length === 0) {
-    return { offset: Math.max(0, Math.floor((read.length - reference.length) / 2)), hits: 0 };
-  }
-  offsets.sort((a, b) => a - b);
-  return { offset: offsets[Math.floor(offsets.length / 2)]!, hits: offsets.length };
+): TargetedDiagonalEstimate {
+  return estimateReferenceOffsetIndexed(createTargetedReferenceSeedIndex(reference, k), read);
 }
 
 function encodeKmer(seq: Uint8Array, start: number, k: number): number {
@@ -122,6 +146,24 @@ export function alignTargetedReference(
     throw new Error("Alignment band settings are invalid.");
   }
   const estimate = estimateReferenceOffset(reference, read, cfg.seedK);
+  return alignTargetedReferenceWithEstimate(reference, read, estimate, options);
+}
+
+/** Alignment entry point for callers that already queried a run-scoped seed
+ * index. It is mathematically identical to alignTargetedReference and avoids
+ * rebuilding/re-querying the same reference index for the chosen strand. */
+export function alignTargetedReferenceWithEstimate(
+  reference: Uint8Array,
+  read: Uint8Array,
+  estimate: TargetedDiagonalEstimate,
+  options: TargetedAlignOptions = {},
+): TargetedAlignment {
+  if (reference.length === 0) throw new Error("Cannot align an empty reference.");
+  if (read.length === 0) throw new Error("Cannot align an empty read.");
+  const cfg = { ...DEFAULTS, ...options };
+  if (cfg.initialBand < 1 || cfg.maxBand < cfg.initialBand) {
+    throw new Error("Alignment band settings are invalid.");
+  }
   let band = cfg.initialBand;
   let result: TargetedAlignment | null;
   while (true) {
@@ -142,7 +184,7 @@ export function alignTargetedReference(
 function alignAtBand(
   reference: Uint8Array,
   read: Uint8Array,
-  estimate: DiagonalEstimate,
+  estimate: TargetedDiagonalEstimate,
   band: number,
   cfg: Required<TargetedAlignOptions>,
 ): TargetedAlignment | null {
@@ -168,47 +210,52 @@ function alignAtBand(
   const row0Max = Math.min(n, localOffset + band);
   for (let j = 0; j <= row0Max; j++) prevM[j] = 0;
 
-  // One byte per state per potentially visited cell. Scores use rolling rows;
-  // traceback is the only O(reference*window) allocation (~4.5 MB at 1.2 kb).
-  const trace = new Uint8Array((m + 1) * width * 3);
+  // One byte per state for band-visited cells only. The old rectangular
+  // layout allocated ~4.5 MB for a 1.2-kb read even at band 24; this packed
+  // layout stores <= (2*band+1) cells per row without changing any DP state.
+  const traceWidth = (2 * band) + 1;
+  const trace = new Uint8Array((m + 1) * traceWidth * 3);
   trace.fill(TRACE_NONE);
-  const traceIndex = (i: number, j: number, state: number): number =>
-    ((i * width + j) * 3) + state;
-
   for (let i = 1; i <= m; i++) {
     currM.fill(NEG); currI.fill(NEG); currD.fill(NEG);
     const center = i + localOffset;
     const jMin = Math.max(0, center - band);
     const jMax = Math.min(n, center + band);
+    const traceRowBase = i * traceWidth * 3;
     for (let j = jMin; j <= jMax; j++) {
       if (j > 0) {
-        const [diagScore, diagState] = max3(prevM[j - 1]!, prevI[j - 1]!, prevD[j - 1]!);
+        let diagScore = prevM[j - 1]!;
+        let diagState = STATE_M;
+        if (prevI[j - 1]! > diagScore) { diagScore = prevI[j - 1]!; diagState = STATE_I; }
+        if (prevD[j - 1]! > diagScore) { diagScore = prevD[j - 1]!; diagState = STATE_D; }
         if (diagScore > NEG / 2) {
           currM[j] = diagScore + (reference[i - 1] === window[j - 1]
             ? cfg.matchScore
             : cfg.mismatchScore);
-          trace[traceIndex(i, j, STATE_M)] = diagState;
+          trace[traceRowBase + ((j - jMin) * 3) + STATE_M] = diagState;
         }
 
-        const [insScore, insState] = max3(
-          currM[j - 1]! + cfg.gapOpenScore,
-          currI[j - 1]! + cfg.gapExtendScore,
-          currD[j - 1]! + cfg.gapOpenScore,
-        );
+        let insScore = currM[j - 1]! + cfg.gapOpenScore;
+        let insState = STATE_M;
+        const extendInsertion = currI[j - 1]! + cfg.gapExtendScore;
+        if (extendInsertion > insScore) { insScore = extendInsertion; insState = STATE_I; }
+        const switchFromDeletion = currD[j - 1]! + cfg.gapOpenScore;
+        if (switchFromDeletion > insScore) { insScore = switchFromDeletion; insState = STATE_D; }
         if (insScore > NEG / 2) {
           currI[j] = insScore;
-          trace[traceIndex(i, j, STATE_I)] = insState;
+          trace[traceRowBase + ((j - jMin) * 3) + STATE_I] = insState;
         }
       }
 
-      const [delScore, delState] = max3(
-        prevM[j]! + cfg.gapOpenScore,
-        prevI[j]! + cfg.gapOpenScore,
-        prevD[j]! + cfg.gapExtendScore,
-      );
+      let delScore = prevM[j]! + cfg.gapOpenScore;
+      let delState = STATE_M;
+      const switchFromInsertion = prevI[j]! + cfg.gapOpenScore;
+      if (switchFromInsertion > delScore) { delScore = switchFromInsertion; delState = STATE_I; }
+      const extendDeletion = prevD[j]! + cfg.gapExtendScore;
+      if (extendDeletion > delScore) { delScore = extendDeletion; delState = STATE_D; }
       if (delScore > NEG / 2) {
         currD[j] = delScore;
-        trace[traceIndex(i, j, STATE_D)] = delState;
+        trace[traceRowBase + ((j - jMin) * 3) + STATE_D] = delState;
       }
     }
     [prevM, currM] = [currM, prevM];
@@ -224,7 +271,10 @@ function alignAtBand(
   const endMin = Math.max(0, endCenter - band);
   const endMax = Math.min(n, endCenter + band);
   for (let j = endMin; j <= endMax; j++) {
-    const [score, state] = max3(prevM[j]!, prevI[j]!, prevD[j]!);
+    let score = prevM[j]!;
+    let state = STATE_M;
+    if (prevI[j]! > score) { score = prevI[j]!; state = STATE_I; }
+    if (prevD[j]! > score) { score = prevD[j]!; state = STATE_D; }
     if (score > bestScore) {
       bestScore = score;
       endJ = j;
@@ -242,7 +292,8 @@ function alignAtBand(
   let bandTouched = false;
   while (i > 0) {
     if (Math.abs((j - i) - localOffset) >= band - 1) bandTouched = true;
-    const previous = trace[traceIndex(i, j, state)]!;
+    const rowMin = Math.max(0, i + localOffset - band);
+    const previous = trace[((i * traceWidth + (j - rowMin)) * 3) + state]!;
     if (previous === TRACE_NONE) {
       throw new Error(`Alignment traceback failed at reference=${i}, read=${j}, state=${state}.`);
     }
@@ -291,13 +342,6 @@ function alignAtBand(
     bandUsed: band,
     bandTouched,
   };
-}
-
-function max3(a: number, b: number, c: number): [number, number] {
-  // Deterministic tie order M > I > D.
-  if (a >= b && a >= c) return [a, STATE_M];
-  if (b >= c) return [b, STATE_I];
-  return [c, STATE_D];
 }
 
 function collapseCigar(codes: ReadonlyArray<CigarCode>): CigarOp[] {
