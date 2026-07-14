@@ -1,6 +1,6 @@
 import type { IFastqSource } from "@cdna/types";
 import { rcInto, reverseInto, uppercaseInto } from "./demultiplex.js";
-import { readFastqRecords } from "./fastq.js";
+import { readFastqRecordsResilient } from "./fastq.js";
 import { runNanoporeAnalyzer, type NanoporeAnalyzerOutput } from "./nanopore-analyzer.js";
 import type { NanoporeRoundStats, NanoporeSiteStats } from "./nanopore.js";
 import { alignTargetedReference, estimateReferenceOffset, type TargetedAlignment } from "./targeted-align.js";
@@ -31,7 +31,7 @@ export interface TargetedPipelineRequest {
   signal?: AbortSignal;
 }
 export interface TargetedPipelineProgress { sourceIndex: number; bytesProcessed: number; totalBytes: number | null; recordsProcessed: number; }
-export type TargetedPrimaryDropReason = TargetedQcFailure | "alignment_failed" | "duplicate_read_id" | "concatemer_or_chimera";
+export type TargetedPrimaryDropReason = TargetedQcFailure | "alignment_failed" | "duplicate_read_id" | "concatemer_or_chimera" | "malformed_fastq";
 export interface TargetedFileStats {
   name: string; round: string; totalReads: number; duplicateReadIds: number; aligned: number;
   fullQcPassed: number; rescuedSiteCalls: number; primaryDropReasons: Record<TargetedPrimaryDropReason, number>;
@@ -103,9 +103,14 @@ export async function runTargetedNanoporePipeline(req: TargetedPipelineRequest):
         req.onProgress?.({ sourceIndex, bytesProcessed, totalBytes: desc.sizeBytes, recordsProcessed });
       }
     });
-    for await (const rec of readFastqRecords(chunks)) {
+    for await (const rec of readFastqRecordsResilient(chunks)) {
       if (req.maxReadsPerSource != null && recordsProcessed >= req.maxReadsPerSource) break;
       recordsProcessed++; perFile.totalReads++; roundStats.total_reads++;
+      if (!isValidFastqRecord(rec)) {
+        bump(perFile.primaryDropReasons, "malformed_fastq");
+        bump(roundStats.primary_drop_reasons, "malformed_fastq");
+        continue;
+      }
       const readId = canonicalReadId(rec.header);
       if (seen.has(readId)) {
         perFile.duplicateReadIds++; roundStats.duplicate_read_ids++;
@@ -209,7 +214,16 @@ function primaryFailure(f: ReadonlyArray<TargetedQcFailure>): TargetedQcFailure 
   return (["low_read_q", "partial_reference", "low_alignment_identity", "low_protected_identity", "protected_indel"] as TargetedQcFailure[]).find((x) => f.includes(x)) ?? "low_protected_identity";
 }
 function bump<T extends string>(record: Record<T, number>, key: T): void { record[key] = (record[key] ?? 0) + 1; }
-function emptyDropReasons(): Record<TargetedPrimaryDropReason, number> { return { low_read_q: 0, partial_reference: 0, low_alignment_identity: 0, low_protected_identity: 0, protected_indel: 0, alignment_failed: 0, duplicate_read_id: 0, concatemer_or_chimera: 0 }; }
+function isValidFastqRecord(rec: { header: Uint8Array; seq: Uint8Array; separator: Uint8Array; qual: Uint8Array }): boolean {
+  if (rec.header[0] !== 64 || rec.separator[0] !== 43 || rec.seq.length === 0 || rec.seq.length !== rec.qual.length) return false;
+  for (const b of rec.seq) {
+    const u = b >= 97 && b <= 122 ? b - 32 : b;
+    if (u !== 65 && u !== 67 && u !== 71 && u !== 84 && u !== 78) return false;
+  }
+  for (const q of rec.qual) if (q < 33 || q > 126) return false;
+  return true;
+}
+function emptyDropReasons(): Record<TargetedPrimaryDropReason, number> { return { low_read_q: 0, partial_reference: 0, low_alignment_identity: 0, low_protected_identity: 0, protected_indel: 0, alignment_failed: 0, duplicate_read_id: 0, concatemer_or_chimera: 0, malformed_fastq: 0 }; }
 function emptyFileStats(name: string, round: string): TargetedFileStats { return { name, round, totalReads: 0, duplicateReadIds: 0, aligned: 0, fullQcPassed: 0, rescuedSiteCalls: 0, primaryDropReasons: emptyDropReasons() }; }
 function emptyRoundStats(sites: ReadonlyArray<ResolvedTargetSite>): TargetedRoundRunStats {
   const siteStats: Record<string, TargetedSiteRunStats> = {};

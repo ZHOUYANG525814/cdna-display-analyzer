@@ -1,5 +1,5 @@
 // App shell. Renders the active tool's stepper + active step, with a
-// top-of-page tool switcher that routes between cDNA-DISPLAY and Nanopore SSM
+// top-of-page tool switcher that routes between cDNA-DISPLAY and Nanopore
 // (and any future sibling tools listed in tools/registry.ts).
 
 import { useEffect } from "react";

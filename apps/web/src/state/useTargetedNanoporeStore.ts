@@ -1,6 +1,8 @@
 import { create } from "zustand";
 import { normalizeReference, resolveTargetSites, type TargetedQcSettings } from "@cdna/core";
 import type { DriveFileRef } from "../worker/types";
+import { NANOPORE_INPUT_LIMITS, validateNanoporeDriveFile, validateNanoporeLocalFile } from "../tools/nanopore-targeted/inputValidation";
+import { validateProjectName } from "../lib/validation";
 
 export const TARGETED_NANOPORE_STEPS = ["inputs", "qc", "run", "results"] as const;
 export type TargetedNanoporeStepId = (typeof TARGETED_NANOPORE_STEPS)[number];
@@ -105,19 +107,22 @@ export const useTargetedNanoporeStore = create<TargetedNanoporeState>((set, get)
   projectName: "",
   setProjectName: (projectName) => set({ projectName, qcLocked: false }),
   rounds: [makeRound(0), makeRound(1)],
-  addRound: () => set({ rounds: [...get().rounds, makeRound(get().rounds.length)], qcLocked: false }),
+  addRound: () => {
+    if (get().rounds.length >= NANOPORE_INPUT_LIMITS.maxRounds) return;
+    set({ rounds: [...get().rounds, makeRound(get().rounds.length)], qcLocked: false });
+  },
   removeRound: (id) => set({ rounds: renumber(get().rounds.filter((r) => r.id !== id)), qcLocked: false }),
   addLocalFiles: (roundId, files) => set({
     rounds: get().rounds.map((r) => r.id === roundId ? {
       ...r,
-      files: [...r.files, ...files.map((file) => ({ id: uid("local"), file, driveRef: null }))],
+      files: [...r.files, ...files.map((file) => ({ id: uid("local"), file, driveRef: null }))].slice(0, NANOPORE_INPUT_LIMITS.maxFilesPerRound),
     } : r),
     qcLocked: false,
   }),
   addDriveFiles: (roundId, files) => set({
     rounds: get().rounds.map((r) => r.id === roundId ? {
       ...r,
-      files: [...r.files, ...files.map((driveRef) => ({ id: `drive_${driveRef.id}`, file: null, driveRef }))],
+      files: [...r.files, ...files.map((driveRef) => ({ id: `drive_${driveRef.id}`, file: null, driveRef }))].slice(0, NANOPORE_INPUT_LIMITS.maxFilesPerRound),
     } : r),
     qcLocked: false,
   }),
@@ -134,6 +139,7 @@ export const useTargetedNanoporeStore = create<TargetedNanoporeState>((set, get)
   sites: [],
   setSites: (sites) => set({ sites, qcLocked: false }),
   addSiteByNt: (ntStart) => {
+    if (get().sites.length >= NANOPORE_INPUT_LIMITS.maxSites) return;
     if (get().sites.some((s) => s.ntStart === ntStart)) return;
     const sites = [...get().sites, { id: uid("site"), name: "", ntStart }]
       .sort((a, b) => a.ntStart - b.ntStart)
@@ -158,14 +164,25 @@ export function targetedInputErrors(state: Pick<TargetedNanoporeState,
   "projectName" | "rounds" | "referenceSeq" | "cdsStart" | "cdsEnd" | "sites"
 >): string[] {
   const errors: string[] = [];
-  if (!state.projectName.trim()) errors.push("Project name is required.");
+  const projectError = validateProjectName(state.projectName);
+  if (projectError) errors.push(projectError);
   if (state.rounds.length < 2) errors.push("Round 0 and at least one selected round are required.");
+  if (state.rounds.length > NANOPORE_INPUT_LIMITS.maxRounds) errors.push(`At most ${NANOPORE_INPUT_LIMITS.maxRounds} rounds are supported.`);
   if (state.rounds.some((r, i) => r.round !== i)) errors.push("Rounds must be consecutive from Round 0.");
   if (state.rounds.some((r) => r.files.length === 0)) errors.push("Every round needs at least one FASTQ file.");
-  const sourceKeys = state.rounds.flatMap((r) => r.files.map((f) => f.driveRef ? `d:${f.driveRef.id}` : `l:${f.file?.name}:${f.file?.size}`));
-  if (new Set(sourceKeys).size !== sourceKeys.length) errors.push("The same FASTQ source cannot be assigned twice.");
+  if (state.rounds.some((r) => r.files.length > NANOPORE_INPUT_LIMITS.maxFilesPerRound)) errors.push(`At most ${NANOPORE_INPUT_LIMITS.maxFilesPerRound} files are allowed per round.`);
+  for (const round of state.rounds) for (const source of round.files) {
+    const check = source.file ? validateNanoporeLocalFile(source.file) : source.driveRef ? validateNanoporeDriveFile(source.driveRef) : { ok: false, reason: "Missing file source." };
+    if (!check.ok) errors.push(`Round ${round.round}: ${check.reason}`);
+  }
+  const driveIds = state.rounds.flatMap((r) => r.files.flatMap((f) => f.driveRef ? [f.driveRef.id] : []));
+  const localObjects = state.rounds.flatMap((r) => r.files.flatMap((f) => f.file ? [f.file] : []));
+  if (new Set(driveIds).size !== driveIds.length || new Set(localObjects).size !== localObjects.length) errors.push("The same FASTQ source cannot be assigned twice.");
   const reference = normalizeReference(state.referenceSeq);
   if (!reference) errors.push("Amplicon reference is required.");
+  if (reference.length > NANOPORE_INPUT_LIMITS.maxReferenceBases) errors.push(`Reference exceeds ${NANOPORE_INPUT_LIMITS.maxReferenceBases.toLocaleString()} bases.`);
+  if (reference && reference.length < NANOPORE_INPUT_LIMITS.minReferenceBases) errors.push(`Reference must contain at least ${NANOPORE_INPUT_LIMITS.minReferenceBases} bases.`);
+  if (state.sites.length > NANOPORE_INPUT_LIMITS.maxSites) errors.push(`At most ${NANOPORE_INPUT_LIMITS.maxSites} target codons are supported.`);
   if (!Number.isInteger(state.cdsStart) || !Number.isInteger(state.cdsEnd) || state.cdsStart < 1 || state.cdsEnd > reference.length || state.cdsEnd < state.cdsStart) {
     errors.push("CDS start/end must define a valid interval inside the reference.");
   } else if ((state.cdsEnd - state.cdsStart + 1) % 3 !== 0) {

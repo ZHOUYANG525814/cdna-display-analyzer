@@ -1,0 +1,76 @@
+import { describe, expect, it } from "vitest";
+import { runTargetedNanoporePipeline } from "@cdna/core";
+import { LocalFastqSource } from "../src/adapters/LocalFastqSource";
+import { AutoDecompressFastqSource } from "../src/adapters/AutoDecompressFastqSource";
+import { buildNanoporeDemoRounds, NANOPORE_DEMO_REFERENCE, NANOPORE_DEMO_SITES } from "../src/tools/nanopore-targeted/demo";
+import { NANOPORE_INPUT_LIMITS, peekNanoporeFastq, validateNanoporeDriveFile, validateNanoporeFileName } from "../src/tools/nanopore-targeted/inputValidation";
+
+describe("unified Nanopore input whitelist", () => {
+  it.each([
+    "reads.fastq", "reads.fq", "reads.fastqsanger", "reads.fastq.gz", "reads.fq.gz", "reads.fastqsanger.gz",
+  ])("accepts %s", (name) => expect(validateNanoporeFileName(name, 100).ok).toBe(true));
+
+  it.each(["reads.txt", "reads.sam", "reads.fast5", "reads.fastq.zip", "../reads.fastq", "bad\u0000.fastq"])(
+    "rejects %s", (name) => expect(validateNanoporeFileName(name, 100).ok).toBe(false),
+  );
+
+  it("rejects empty/oversized names and forged Drive metadata", () => {
+    expect(validateNanoporeFileName("empty.fastq", 0).ok).toBe(false);
+    expect(validateNanoporeFileName(`${"a".repeat(256)}.fastq`, 10).ok).toBe(false);
+    expect(validateNanoporeDriveFile({ id: "../../token", name: "reads.fastq", sizeBytes: 10 }).ok).toBe(false);
+  });
+
+  it("peeks a real .fastqsanger record", async () => {
+    const file = new File(["@r qs:f:20\nACGTN\n+\nIIIII\n"], "real.fastqsanger");
+    expect(await peekNanoporeFastq(file)).toEqual({ ok: true });
+  });
+
+  it("rejects malformed content even with a whitelisted suffix", async () => {
+    const file = new File(["this is not FASTQ\n"], "fake.fastq");
+    expect((await peekNanoporeFastq(file)).ok).toBe(false);
+  });
+
+  it("round-trips a .fastqsanger.gz through streaming compression, peek, and decompression", async () => {
+    const raw = "@gz qs:f:20\nACGTNACGTN\n+\nIIIIIIIIII\n";
+    const compressed = await new Response(
+      new Blob([raw]).stream().pipeThrough(new CompressionStream("gzip")),
+    ).arrayBuffer();
+    const file = new File([compressed], "reads.fastqsanger.gz");
+    expect(await peekNanoporeFastq(file)).toEqual({ ok: true });
+    const source = new AutoDecompressFastqSource(new LocalFastqSource(file));
+    expect(await new Response(await source.open()).text()).toBe(raw);
+    expect(source.describe().sizeBytes).toBeNull();
+  });
+
+  it("keeps explicit pressure limits bounded", () => {
+    expect(NANOPORE_INPUT_LIMITS.maxRounds).toBeLessThanOrEqual(32);
+    expect(NANOPORE_INPUT_LIMITS.maxFilesPerRound).toBeLessThanOrEqual(128);
+    expect(NANOPORE_INPUT_LIMITS.maxSites).toBeLessThanOrEqual(512);
+    expect(NANOPORE_INPUT_LIMITS.maxReferenceBases).toBeLessThanOrEqual(100_000);
+  });
+});
+
+describe("built-in Nanopore demo", () => {
+  it("runs through the production core and recovers the designed Round-2 double enrichment", async () => {
+    const rounds = buildNanoporeDemoRounds();
+    const sources: LocalFastqSource[] = [];
+    const sourceRoundIndices: number[] = [];
+    for (const round of rounds) for (const source of round.files) {
+      sources.push(new LocalFastqSource(source.file!));
+      sourceRoundIndices.push(round.round);
+    }
+    const result = await runTargetedNanoporePipeline({
+      sources, sourceRoundIndices, roundNames: rounds.map((r) => `Round ${r.round}`),
+      reference: NANOPORE_DEMO_REFERENCE,
+      sites: NANOPORE_DEMO_SITES.map((site) => ({ name: site.name, ntStart: site.ntStart, length: 3, design: "NNK" as const })),
+      settings: { minReadQ: 10, minReferenceCoverage: 0.9, minAlignmentIdentity: 0.85, minProtectedIdentity: 0.95, maxProtectedIndelBases: 30, minTargetBaseQ: 15, minInputCountToScore: 5, reportHaplotypes: true },
+    });
+    expect(result.stats.get("Round 0")!.primary_drop_reasons.low_read_q).toBe(1);
+    expect(result.stats.get("Round 2")!.primary_drop_reasons.concatemer_or_chimera).toBe(1);
+    expect(result.fileStats.filter((file) => file.round === "Round 1")).toHaveLength(2);
+    const double = result.analyzer.haplotypeRows.find((row) => row.Haplotype_DNA === "TGG_CTG");
+    expect(double).toBeTruthy();
+    expect(double!["Count_Round 2"]).toBe(100);
+    expect(double!["Fitness_vs_WT_Round 2"] as number).toBeGreaterThan(3);
+  }, 20_000);
+});

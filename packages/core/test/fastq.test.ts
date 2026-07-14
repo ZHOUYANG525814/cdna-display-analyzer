@@ -4,6 +4,7 @@ import {
   bytesToAscii,
   meanPhred,
   readFastqRecords,
+  readFastqRecordsResilient,
   type FastqRecord,
 } from "../src/fastq.js";
 
@@ -68,6 +69,28 @@ describe("LineSplitter", () => {
     const sp = new LineSplitter();
     expect([...sp.consume(new Uint8Array(0))]).toEqual([]);
     expect([...sp.flush()]).toEqual([]);
+  });
+});
+
+describe("readFastqRecordsResilient — malformed input recovery", () => {
+  it("emits a bad record and resumes at the next header after a missing separator", async () => {
+    const input = "@bad qs:f:20\nACGT\nnot-plus\nIIII\n@good qs:f:20\nTGCA\n+\nIIII\n";
+    const records = await collect(readFastqRecordsResilient(iter([bytesOf(input)])));
+    expect(records).toHaveLength(2); // one malformed record, then recovered good record
+    expect(bytesToAscii(records.at(-1)!.header)).toContain("@good");
+    expect(bytesToAscii(records.at(-1)!.seq)).toBe("TGCA");
+  });
+
+  it("emits a trailing partial record instead of silently dropping it", async () => {
+    const records = await collect(readFastqRecordsResilient(iter([bytesOf("@partial\nACGT\n+\n")])));
+    expect(records).toHaveLength(1);
+    expect(records[0]!.qual).toHaveLength(0);
+  });
+
+  it("accepts a valid quality line beginning with @", async () => {
+    const records = await collect(readFastqRecordsResilient(iter([bytesOf("@r\nACGT\n+\n@III\n")])));
+    expect(records).toHaveLength(1);
+    expect(bytesToAscii(records[0]!.qual)).toBe("@III");
   });
 });
 
@@ -147,7 +170,7 @@ describe("FastqRecord ownership", () => {
     for await (const r of readFastqRecords(iter([all.slice(0, 5), all.slice(5)]))) {
       // Copy the seq line out — analogous to what the demultiplex stage does.
       const copied = r.seq.slice();
-      recs.push({ header: r.header.slice(), seq: copied, qual: r.qual.slice() });
+      recs.push({ header: r.header.slice(), seq: copied, separator: r.separator.slice(), qual: r.qual.slice() });
     }
     expect(bytesToAscii(recs[0]!.seq)).toBe("ATCGATCGATCG");
   });

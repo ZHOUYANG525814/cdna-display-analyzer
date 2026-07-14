@@ -14,6 +14,7 @@ export {
 export {
   LineSplitter,
   readFastqRecords,
+  readFastqRecordsResilient,
   meanPhred,
   bytesToAscii,
   type FastqRecord,

@@ -18,4 +18,4 @@ export class AutoDecompressFastqSource implements IFastqSource {
     return stream.pipeThrough(new DecompressionStream("gzip") as unknown as ReadableWritablePair<Uint8Array, Uint8Array>);
   }
 }
-function isGzip(name: string): boolean { return /\.(?:fastq|fq)\.gz$/i.test(name); }
+function isGzip(name: string): boolean { return /\.(?:fastq|fq|fastqsanger)\.gz$/i.test(name); }

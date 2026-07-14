@@ -2,8 +2,9 @@
 
 ## Scope
 
-This is a full-amplicon sibling of the fixed-ROI Nanopore SSM engine. It is
-registered as **Targeted NP** and reuses the existing FASTQ adapters, Google
+The former fixed-ROI SSM and Targeted NP user entries are consolidated into a
+single **Nanopore** window. Its full-amplicon path covers both 1–2-codon SSM
+and multi-codon scanning libraries, and reuses the existing FASTQ adapters, Google
 Drive OAuth/Picker, Web Worker transport, statistical helpers and CSV model.
 
 The biological model is deliberately narrow: consecutive selection rounds
@@ -58,6 +59,17 @@ Drive uses `files.get?alt=media` and consumes `response.body` directly. Local
 files use `File.stream()`. `.fastq.gz`/`.fq.gz` are decompressed with a
 backpressure-preserving `DecompressionStream`; raw sequence is not uploaded or
 buffered as a complete file.
+
+Accepted input suffixes are `.fastq`, `.fq`, `.fastqsanger` and the gzip form
+of each. Local inputs must pass a decompressed first-record check before they
+enter the form. The production parser then validates every record, reports
+malformed records, and resynchronizes at the next FASTQ header. Rounds, files,
+reference length and site count have explicit pressure limits.
+
+The Inputs screen includes a deterministic three-round Demo. It exercises two
+sites, linked haplotypes, reverse reads, a multi-file round, low-Q, partial-read
+rescue, concatemer rejection and `.fastqsanger` ingestion through the same
+production core.
 
 Downloads:
 

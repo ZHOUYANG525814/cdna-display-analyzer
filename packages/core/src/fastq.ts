@@ -12,6 +12,7 @@ export interface FastqRecord {
   // Views may share the parent chunk buffer; copy if retention is needed.
   header: Uint8Array;
   seq: Uint8Array;
+  separator: Uint8Array;
   qual: Uint8Array;
 }
 
@@ -74,9 +75,9 @@ export async function* readFastqRecords(
     while (lineBuf.length >= 4) {
       const header = lineBuf.shift()!;
       const seq = lineBuf.shift()!;
-      lineBuf.shift(); // '+' separator
+      const separator = lineBuf.shift()!;
       const qual = lineBuf.shift()!;
-      yield { header, seq, qual };
+      yield { header, seq, separator, qual };
     }
   };
 
@@ -91,6 +92,53 @@ export async function* readFastqRecords(
     lineBuf.push(line);
   }
   for (const rec of drain()) yield rec;
+}
+
+/** Resynchronizing FASTQ reader for untrusted Nanopore inputs. Malformed or
+ * partial records are yielded for explicit QC, and a later @header restores
+ * framing instead of corrupting every following record. */
+export async function* readFastqRecordsResilient(
+  source: AsyncIterable<Uint8Array>,
+): AsyncIterableIterator<FastqRecord> {
+  const splitter = new LineSplitter();
+  let state: 0 | 1 | 2 | 3 | 4 = 0; // 4 = skip damaged fragment until next header
+  let header: Uint8Array = EMPTY;
+  let seq: Uint8Array = EMPTY;
+  let separator: Uint8Array = EMPTY;
+  const consumeLine = function* (line: Uint8Array): IterableIterator<FastqRecord> {
+    if (state === 0) {
+      if (line[0] === 0x40) { header = line; state = 1; }
+      else { yield { header: line, seq: EMPTY, separator: EMPTY, qual: EMPTY }; state = 4; }
+    } else if (state === 1) {
+      if (line[0] === 0x40) {
+        yield { header, seq: EMPTY, separator: EMPTY, qual: EMPTY };
+        header = line;
+      } else { seq = line; state = 2; }
+    } else if (state === 2) {
+      if (line[0] === 0x2b) { separator = line; state = 3; }
+      else {
+        yield { header, seq, separator: line, qual: EMPTY };
+        if (line[0] === 0x40) { header = line; state = 1; }
+        else state = 4;
+      }
+    } else if (state === 4) {
+      if (line[0] === 0x40) { header = line; state = 1; }
+    } else if (line[0] === 0x40 && (line.length !== seq.length || hasAsciiWhitespace(line))) {
+      yield { header, seq, separator, qual: EMPTY };
+      header = line; state = 1;
+    } else {
+      yield { header, seq, separator, qual: line };
+      state = 0;
+    }
+  };
+  for await (const chunk of source) for (const line of splitter.consume(chunk)) yield* consumeLine(line);
+  for (const line of splitter.flush()) yield* consumeLine(line);
+  if (state !== 0 && state !== 4) yield { header, seq: state >= 2 ? seq : EMPTY, separator: state >= 3 ? separator : EMPTY, qual: EMPTY };
+}
+
+function hasAsciiWhitespace(line: Uint8Array): boolean {
+  for (const b of line) if (b === 0x20 || b === 0x09) return true;
+  return false;
 }
 
 // Mean Phred+33 score over qual bytes. Empty qual returns 0 (treated as failing

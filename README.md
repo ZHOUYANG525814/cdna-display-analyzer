@@ -151,8 +151,8 @@ web/
 │   │   ├── state/            # Zustand store
 │   │   └── tools/            # Per-tool modules
 │   │       ├── cdna-display/         # Primer-demultiplexed cDNA pipeline
-│   │       ├── nanopore-ssm/         # Dual-anchor Nanopore SSM pipeline
-│   │       └── nanopore-targeted/    # Full-amplicon multi-codon NNK pipeline
+│   │       ├── nanopore-ssm/         # Retained legacy implementation/tests
+│   │       └── nanopore-targeted/    # Unified Nanopore UI + full-amplicon core
 │   └── test/                 # Browser-side smoke tests
 ├── packages/
 │   ├── core/                 # Pure isomorphic pipeline
@@ -190,8 +190,8 @@ The local-files flow needs no setup.
 
 ## Status
 
-The cDNA-DISPLAY, dual-anchor Nanopore SSM, and full-amplicon targeted NNK
-pipelines are registered and tested. The targeted mode is a sibling core path,
-not a rewrite of the fixed-ROI engine; see its
+The app exposes cDNA-DISPLAY and one unified Nanopore window. The Nanopore
+workflow supports both small-site SSM and multi-codon targeted NNK libraries
+through the full-amplicon core; see its
 [processing contract](./docs/NANOPORE_TARGETED_WEB_MODE.md) and the original
 [architecture audit](./docs/NANOPORE_MTG_INITIAL_AUDIT.md).

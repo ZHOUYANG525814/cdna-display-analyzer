@@ -6,11 +6,11 @@ import { QcStep } from "./steps/QcStep";
 import { RunStep } from "./steps/RunStep";
 import { ResultsStep } from "./steps/ResultsStep";
 
-export const nanoporeTargetedTool: Tool = {
+export const nanoporeTool: Tool = {
   id: "nanopore-targeted",
-  name: "Nanopore Targeted Enrichment",
-  shortName: "Targeted NP",
-  description: "Full-amplicon QC and Round 0-normalized enrichment for targeted NNK codons.",
+  name: "Nanopore Analyzer",
+  shortName: "Nanopore",
+  description: "Full-amplicon QC and Round 0-normalized enrichment for targeted NNK/SSM codons.",
   icon: ScanLine,
   steps: [
     { id: "inputs", label: "Inputs", blurb: "Rounds + CDS + sites", Component: InputsStep },

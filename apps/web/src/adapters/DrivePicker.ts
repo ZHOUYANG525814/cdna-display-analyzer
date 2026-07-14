@@ -81,7 +81,7 @@ export async function showDrivePicker(opts: ShowPickerOptions): Promise<PickedFi
       //                            "I just opened this link" case without
       //                            requiring Add-to-Drive first)
       // All three use the same .fastq / .fq name filter.
-      const filterQuery = "name contains '.fastq' or name contains '.fq'";
+      const filterQuery = "name contains '.fastq' or name contains '.fq' or name contains '.fastqsanger'";
 
       const myDrive = new picker.DocsView();
       myDrive.setIncludeFolders(false);

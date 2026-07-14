@@ -66,4 +66,16 @@ describe("runTargetedNanoporePipeline", () => {
     expect(result.stats.get("Round 0")!.primary_drop_reasons.concatemer_or_chimera).toBe(1);
     expect(result.stats.get("Round 0")!.aligned).toBe(0);
   });
+
+  it("places malformed FASTQ records in an exclusive bucket without aborting later records", async () => {
+    const malformed = `@bad qs:f:20\n${REF}\nnot-plus\n${Q}\n`;
+    const result = await runTargetedNanoporePipeline({
+      sources: [new MemoryFastq("r0.fastqsanger", malformed + record("good0", REF)), new MemoryFastq("r1.fastq", record("good1", REF))],
+      sourceRoundIndices: [0, 1], roundNames: ["Round 0", "Round 1"], reference: REF,
+      sites: [{ name: "site_01", ntStart: TARGET, length: 3, design: "NNK" }],
+      settings: { minReadQ: 10, minReferenceCoverage: 0.9, minAlignmentIdentity: 0.85, minProtectedIdentity: 0.95, maxProtectedIndelBases: 30, minTargetBaseQ: 15, minInputCountToScore: 1, reportHaplotypes: false },
+    });
+    expect(result.stats.get("Round 0")!.primary_drop_reasons.malformed_fastq).toBe(1);
+    expect(result.stats.get("Round 0")!.full_qc_passed).toBe(1);
+  });
 });
