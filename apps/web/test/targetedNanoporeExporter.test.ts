@@ -18,7 +18,7 @@ const snapshot = { projectName: "audit", referenceSeq: "GCT".repeat(20), cdsStar
 
 describe("targeted Nanopore result artifacts", () => {
   it("matches the NGS three-artifact download contract without losing DNA aggregates", () => {
-    expect(TARGETED_EXPORT_FILES.map(([name]) => name)).toEqual(["Master_Enrichment_Matrix.csv.gz", "run_stats.json", "QC_Summary_Report.txt"]);
+    expect(TARGETED_EXPORT_FILES.map(([name]) => name)).toEqual(["Master_Enrichment_Matrix.csv.gz", "Combination_Enrichment_Matrix.csv.gz", "run_stats.json", "QC_Summary_Report.txt"]);
     const stats = buildRunStats(outcome, snapshot);
     expect(stats.exactCodonCounts["Round 0"]!.site_01!.GCT).toBe(40);
     expect(stats).toHaveProperty("siteCallability");
@@ -41,6 +41,8 @@ describe("targeted Nanopore result artifacts", () => {
     expect(report).toContain("Substitution inside a target");
     expect(report).toContain("Insertion/deletion overlapping a target codon");
     expect(report).toContain("Partial read");
+    expect(report).toContain("MULTI-SITE COMBINATION ENRICHMENT");
+    expect(report).toContain("F_L_W");
     expect(report).toContain("Without biological replicates");
     expect(report).toContain("four-term Poisson");
   });

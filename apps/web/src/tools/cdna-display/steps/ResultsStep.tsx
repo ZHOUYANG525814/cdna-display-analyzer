@@ -4,7 +4,7 @@ import { useRunStore } from "@/state/useRunStore";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { exportOutcome } from "@/adapters/BrowserExporter";
+import { CDNA_EXPORT_FILES, exportOutcome } from "@/adapters/BrowserExporter";
 import { FilterFunnelSankey } from "@/tools/cdna-display/viz/FilterFunnelSankey";
 import { CountHistogram } from "@/tools/cdna-display/viz/CountHistogram";
 import { EnrichmentScatter } from "@/tools/cdna-display/viz/EnrichmentScatter";
@@ -118,11 +118,7 @@ export function ResultsStep() {
           </Button>
         </CardHeader>
         <CardContent>
-          <ul className="text-sm text-muted-foreground space-y-1">
-            <li>• <code className="font-mono text-xs">Master_Enrichment_Matrix.csv.gz</code> — the full peptide matrix (gzipped, ~6× smaller; pandas reads <code className="font-mono text-xs">.csv.gz</code> natively)</li>
-            <li>• <code className="font-mono text-xs">run_stats.json</code> — per-round demultiplex counts (machine-readable)</li>
-            <li>• <code className="font-mono text-xs">QC_Summary_Report.txt</code> — human-readable summary + methods + column reference</li>
-          </ul>
+          <ul className="text-sm text-muted-foreground space-y-1">{CDNA_EXPORT_FILES.map(([name, description]) => <li key={name}>• <code className="font-mono text-xs">{name}</code> — {description}</li>)}</ul>
           {topPeptides.totalRows > 1_000_000 ? (
             <div className="mt-3 rounded-md border border-warning/40 bg-warning/5 px-3 py-2 text-xs">
               <span className="font-medium text-warning">⚠ </span>
@@ -483,4 +479,3 @@ function YieldBar({ pct }: { pct: number }) {
     </div>
   );
 }
-

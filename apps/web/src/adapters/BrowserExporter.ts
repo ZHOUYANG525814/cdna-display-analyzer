@@ -1,10 +1,11 @@
 // Local-download artifacts for a finished pipeline run. Mirrors what the
 // desktop GUI writes to ~/Documents/cDNA_Analyzer_Workspace/<PIN>/...:
 //   - Master_Enrichment_Matrix.csv
+//   - Combination_Enrichment_Matrix.csv (full-length peptide alias for NGS)
 //   - run_stats.json
 //   - QC_Summary_Report.txt  (built here, see buildQcReport)
 //
-// All three are emitted as separate browser downloads triggered by user
+// All artifacts are emitted as separate browser downloads triggered by user
 // interaction; modern browsers will not let a single click produce multiple
 // downloads unless they happen synchronously, so we kick all three off in
 // the same task.
@@ -12,6 +13,13 @@
 import type { PipelineOutcome } from "../worker/types";
 import { CDNA_METHODS, formatMethodsAsText } from "@cdna/core";
 import { useRunStore } from "../state/useRunStore";
+
+export const CDNA_EXPORT_FILES = [
+  ["Master_Enrichment_Matrix.csv.gz", "Full peptide count, RPM and enrichment matrix"],
+  ["Combination_Enrichment_Matrix.csv.gz", "Full-length peptide combinations; for short-read NGS the complete translated CDS is the combination key"],
+  ["run_stats.json", "Per-round demultiplex and QC counts"],
+  ["QC_Summary_Report.txt", "Human-readable summary, methods and column reference"],
+] as const;
 
 function downloadBlob(blob: Blob, filename: string): void {
   const url = URL.createObjectURL(blob);
@@ -48,10 +56,15 @@ export async function exportOutcome(
     if (opts.gzipCsv) {
       const gz = await gzipBlob(outcome.csvBlob);
       downloadBlob(gz, `${base}_Master_Enrichment_Matrix.csv.gz`);
+      // In cDNA-display NGS each accepted read already resolves one complete
+      // translated CDS. The full peptide is therefore the combination key;
+      // reuse the compressed bytes instead of recalculating identical stats.
+      downloadBlob(gz, `${base}_Combination_Enrichment_Matrix.csv.gz`);
     } else {
       // Already a Blob coming back from the worker — download directly,
       // no re-clone.
       downloadBlob(outcome.csvBlob, `${base}_Master_Enrichment_Matrix.csv`);
+      downloadBlob(outcome.csvBlob, `${base}_Combination_Enrichment_Matrix.csv`);
     }
   }
   downloadBlob(
@@ -127,6 +140,10 @@ export function buildQcReport(outcome: PipelineOutcome, projectName: string): st
         `${yieldPct.toFixed(2).padStart(6)}%`,
     );
   }
+  lines.push("");
+  lines.push("--- 2. COMBINATION ENRICHMENT SEMANTICS ---");
+  lines.push("For short-read cDNA-display NGS, each accepted read yields one complete translated CDS peptide.");
+  lines.push("Combination_Enrichment_Matrix therefore uses that full-length Peptide_Seq as its combination key and reuses the same tested enrichment statistics as the master matrix.");
   lines.push("");
 
   // --- Methods & column reference (Phase 6.14) ---------------------------

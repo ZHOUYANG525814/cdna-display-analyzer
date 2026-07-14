@@ -17,6 +17,7 @@ export interface TargetedExportSnapshot {
 
 export const TARGETED_EXPORT_FILES = [
   ["Master_Enrichment_Matrix.csv.gz", "Complete per-site amino-acid count, RPM, fitness, variance and FDR matrix"],
+  ["Combination_Enrichment_Matrix.csv.gz", "All target amino acids concatenated in confirmed site order and analyzed as one multi-site haplotype"],
   ["run_stats.json", "Machine-readable configuration, file QC, filter funnel, site callability and provenance"],
   ["QC_Summary_Report.txt", "Human-readable QC logic, abnormal-event handling, formulas and caveats"],
 ] as const;
@@ -25,6 +26,7 @@ export async function exportTargetedOutcome(outcome: TargetedNanoporeOutcome, sn
   const base = sanitize(snapshot.projectName || "nanopore_run");
   const downloads: Array<[Blob, string]> = [];
   await addGzip(downloads, outcome.perSiteCsvBlob, `${base}_Master_Enrichment_Matrix.csv.gz`);
+  await addGzip(downloads, outcome.haplotypeCsvBlob, `${base}_Combination_Enrichment_Matrix.csv.gz`);
   downloads.push(
     [jsonBlob(buildRunStats(outcome, snapshot)), `${base}_run_stats.json`],
     [textBlob(buildTargetedQcReport(outcome, snapshot), "text/plain;charset=utf-8"), `${base}_QC_Summary_Report.txt`],
@@ -87,14 +89,18 @@ export function buildTargetedQcReport(outcome: TargetedNanoporeOutcome, snapshot
     "A read receives one primary whole-read drop reason. Overlapping diagnostic failures remain in run_stats.json. Site rescue is reported separately and is never subtracted twice.", "",
     "--- 2. SITE CALLABILITY & READ PRESERVATION ---", buildSiteCallabilityCsv(outcome).trim(), "",
     "Callable_Total = Callable_Full + Callable_Rescued. Site denominators are independent: failure at site_02 does not erase a valid site_01 call. Haplotypes use full-QC reads only.", "",
-    "--- 3. HOW SUBSTITUTIONS, INSERTIONS AND DELETIONS ARE HANDLED ---",
+    "--- 3. MULTI-SITE COMBINATION ENRICHMENT ---",
+    "Haplotype_AA in Combination_Enrichment_Matrix is formed by concatenating target-site amino acids in the locked site order (for example F_L_W).",
+    "A read enters this matrix only when every target codon is callable and the full read passes QC. Partial rescued calls are excluded because an incomplete read cannot establish linkage.",
+    "Counts, RPM, WT-normalized fitness, four-term variance, p-value and BH-FDR reuse the same analyzer; combination rows form their own haplotype multiple-testing family.", "",
+    "--- 4. HOW SUBSTITUTIONS, INSERTIONS AND DELETIONS ARE HANDLED ---",
     "Substitution outside a target: retained while target-masked protected identity passes; accumulated mismatch can fail low_protected_identity.",
     "Substitution inside a target: called as a codon only when all three projected bases are unambiguous and meet target base Q. Intended target substitutions are excluded from protected-identity scoring.",
     "Insertion/deletion overlapping a target codon: that site enters target_indel and is non-callable; other covered sites remain eligible.",
     "Small indel outside targets: projected through CIGAR and tolerated up to the fixed protected-indel limit. Larger disruption fails protected_indel for the whole read.",
     "Partial read: may rescue one site only when both 30-nt flanks are covered and pass protected identity. It cannot create a haplotype.",
     "Off-NNK and stop codon: retained in exact counts and site QC as design/base-calling diagnostics; not silently removed.", "",
-    "--- 4. INTERPRETATION LIMITS ---",
+    "--- 5. INTERPRETATION LIMITS ---",
     "The primary enrichment matrix collapses synonymous codons to amino acids. Lossless exact-codon counts, exact target haplotypes and haplotype statistics are retained under dedicated keys in run_stats.json.",
     "Round 0 threshold gates inference only. It does not delete raw counts or RPM.",
     "Without biological replicates, Var/Z/p/FDR describe Poisson counting uncertainty and usually underestimate total experimental uncertainty. Use them for prioritization, not replicate-level claims.",

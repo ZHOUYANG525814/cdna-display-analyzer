@@ -31,7 +31,7 @@ export function RunStep() {
         sourceRoundIndices: [...localRounds, ...driveRounds],
         roundNames: s.rounds.map((r) => `Round ${r.round}`), reference: s.referenceSeq,
         sites: s.sites.map((site) => ({ name: site.name, ntStart: site.ntStart, length: 3, design: "NNK" as const })),
-        settings: { ...s.settings, reportHaplotypes: s.reportHaplotypes },
+        settings: { ...s.settings, reportHaplotypes: s.sites.length >= 2 },
       }, (p) => setProgress((old) => ({ ...old, [p.sourceIndex]: { bytes: p.bytesProcessed, total: p.totalBytes, reads: p.recordsProcessed, name: p.fileName } })));
       s.setRunState({ status: "done", outcome, finishedAt: Date.now() });
       s.setStep("results");
