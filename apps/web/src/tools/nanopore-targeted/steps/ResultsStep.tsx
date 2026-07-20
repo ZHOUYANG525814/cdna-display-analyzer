@@ -21,13 +21,13 @@ export function ResultsStep() {
   const [qcOpen, setQcOpen] = useState(false);
   const last = o?.roundNames[o.roundNames.length - 1] ?? "";
   const first = o?.roundNames[0] ?? "";
-  const chartRows = useMemo(() => o ? targetedRowsToChartRows(o.perSiteRowsForViz, o.roundNames).sort((a, b) => (b.centered[last] ?? -Infinity) - (a.centered[last] ?? -Infinity)) : [], [o, last]);
+  const chartRows = useMemo(() => o ? targetedRowsToChartRows(o.perSiteRowsForViz, o.roundNames, s.settings.pseudocount).sort((a, b) => (b.centered[last] ?? -Infinity) - (a.centered[last] ?? -Infinity)) : [], [o, last, s.settings.pseudocount]);
   const top20 = useMemo(() => o ? [...o.perSiteRowsForViz].filter((row) => Number.isFinite(Number(row[`Centered_Enrichment_${last}_vs_${first}`]))).sort((a, b) => Number(b[`Centered_Enrichment_${last}_vs_${first}`]) - Number(a[`Centered_Enrichment_${last}_vs_${first}`])).slice(0, 20) : [], [o, last, first]);
   if (!o) return <div className="space-y-4"><p>No completed run is available.</p><Button onClick={() => s.setStep("run")}>Go to Run</Button></div>;
   const total = o.roundNames.reduce((n, r) => n + o.statsByRound[r]!.total_reads, 0);
   const full = o.roundNames.reduce((n, r) => n + o.statsByRound[r]!.full_qc_passed, 0);
   const callable = o.roundNames.reduce((n, r) => n + o.siteNames.reduce((m, site) => m + o.statsByRound[r]!.sites[site]!.passed_qc, 0), 0);
-  const snapshot: TargetedExportSnapshot = { projectName: s.projectName, referenceSeq: s.referenceSeq, cdsStart: s.cdsStart, cdsEnd: s.cdsEnd, cdsStrand: s.cdsStrand, sites: s.sites, settings: s.settings, reportHaplotypes: s.sites.length >= 2, startedAt: s.runState.startedAt, finishedAt: s.runState.finishedAt };
+  const snapshot: TargetedExportSnapshot = { projectName: s.projectName, referenceSeq: s.referenceSeq, cdsStart: s.cdsStart, cdsEnd: s.cdsEnd, cdsStrand: s.cdsStrand, sites: s.sites, rounds: s.rounds, settings: s.settings, reportHaplotypes: s.sites.length >= 2, startedAt: s.runState.startedAt, finishedAt: s.runState.finishedAt };
   const downloadAll = async () => { setExporting(true); try { await exportTargetedOutcome(o, snapshot); } finally { setExporting(false); } };
 
   return <div className="mx-auto max-w-6xl space-y-6">
@@ -51,9 +51,9 @@ export function ResultsStep() {
 
     <Card><button type="button" className="w-full text-left hover:bg-muted/40" onClick={() => setQcOpen((open) => !open)}><CardHeader><CardTitle className="flex items-center gap-2 text-base">{qcOpen ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}QC logic, abnormal events &amp; audit tables</CardTitle><CardDescription className="ml-6">Detailed substitution/indel/rescue behavior and counters for users auditing the pipeline.</CardDescription></CardHeader></button>{qcOpen && <CardContent className="space-y-5"><div className="grid gap-3 text-sm md:grid-cols-2"><Logic title="Substitution outside targets">Retained while target-masked protected identity passes. Accumulated fixed-region mismatches may indicate a wrong reference or poor base-calling.</Logic><Logic title="Substitution inside a target">Called only when all three bases are projected, unambiguous and ≥ target Q. Intended NNK changes do not penalize protected identity.</Logic><Logic title="Insertion / deletion at a target">Only the overlapping target becomes non-callable and enters target_indel; valid distant targets remain usable.</Logic><Logic title="Insertion / deletion in protected sequence">Small CIGAR-projected events are tolerated up to 30 nt. Larger protected disruption fails the whole read.</Logic><Logic title="Partial read rescue">Requires passing 30-nt flanks on both sides. It contributes to independent target counts but never to a linked combination.</Logic><Logic title="Off-NNK and stop calls">Retained as synthesis/base-calling diagnostics and never silently converted to WT.</Logic></div><QcFunnel outcome={o} /><SiteTable outcome={o} /></CardContent>}</Card>
 
-    <MethodsCard doc={TARGETED_NANOPORE_METHODS} settings={methodSettings(snapshot)} libraryMedian={o.libraryMedianFitness} hitCounts={o.hitCounts} />
+    <MethodsCard doc={TARGETED_NANOPORE_METHODS} pseudocount={s.settings.pseudocount} settings={methodSettings(snapshot)} libraryMedian={o.libraryMedianFitness} hitCounts={o.hitCounts} />
 
-    <div className="flex flex-wrap justify-between gap-2"><Button variant="outline" onClick={() => s.setStep("run")}><ArrowLeft className="mr-2 h-4 w-4" />Back to run</Button><Button onClick={s.prepareNextRun}><RefreshCw className="mr-2 h-4 w-4" />Next run</Button></div><p className="text-center text-xs text-muted-foreground">Next run preserves reference, CDS, targets and QC values, but clears the previous FASTQs and results.</p>
+    <div className="flex flex-wrap justify-between gap-2"><Button variant="outline" onClick={() => s.setStep("run")}><ArrowLeft className="mr-2 h-4 w-4" />Back to run</Button><Button onClick={s.prepareNextRun}><RefreshCw className="mr-2 h-4 w-4" />New run</Button></div><p className="text-center text-xs text-muted-foreground">New run clears the project, design, settings, sequencing-file hints and results, then restores the recommended defaults.</p>
   </div>;
 }
 

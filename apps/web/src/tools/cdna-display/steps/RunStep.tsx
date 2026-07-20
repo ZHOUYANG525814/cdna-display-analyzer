@@ -188,6 +188,7 @@ export function RunStep() {
             minMeanPhred: s.minMeanPhred,
             minMeanPhredCds: s.minMeanPhredCds,
           },
+          pseudocount: s.pseudocount,
           useWasm: s.useWasm,
           mode: s.pipelineMode,
           ...(sourceRoundIndices ? { sourceRoundIndices } : {}),

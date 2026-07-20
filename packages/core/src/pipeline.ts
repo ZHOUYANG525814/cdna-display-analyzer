@@ -25,6 +25,9 @@ export interface PipelineRequest {
   sources: ReadonlyArray<IFastqSource>;
   rounds: ReadonlyArray<RoundConfigInput>;
   settings: DemultiplexSettings;
+  /** Downstream enrichment pseudocount in RPM units. Default UI choice is 0.5; 1.0
+   *  remains available for sensitivity and historical comparison. */
+  pseudocount: number;
   onProgress?: (event: PipelineProgress) => void;
   /** Human-readable run log channel. Each event is appended verbatim to the
    *  UI terminal (Phase 6.13). Use sparingly — these cross the worker
@@ -108,7 +111,7 @@ export async function runPipeline(req: PipelineRequest): Promise<PipelineResult>
       ` · filterStop=${req.settings.filterStop}` +
       ` · minMeanPhred=${req.settings.minMeanPhred.toFixed(1)}` +
       ` · minMeanPhredCds=${req.settings.minMeanPhredCds.toFixed(1)}` +
-      ` · pseudocount=1.0 · FDR=BH`,
+      ` · pseudocount=${req.pseudocount} RPM · FDR=BH`,
   );
   const ASCII_DEC = new TextDecoder("latin1");
   for (let i = 0; i < preprocessed.length; i++) {
@@ -307,6 +310,7 @@ export async function runPipeline(req: PipelineRequest): Promise<PipelineResult>
     roundNames,
     dnaCounters: engine.dnaCounters,
     stats: engine.stats,
+    pseudocount: req.pseudocount,
   });
   const dtAnalyzer = ((performance.now() - tAnalyzer0) / 1000).toFixed(1);
 
@@ -349,7 +353,12 @@ export async function runPipeline(req: PipelineRequest): Promise<PipelineResult>
     log("Analyzer: no peptides emitted (empty counters).", "warning");
   }
 
-  const runStatsJson = buildRunStatsJson(engine, roundNames, analyzer?.libraryMedianEnrich);
+  const runStatsJson = buildRunStatsJson(
+    engine,
+    roundNames,
+    req.pseudocount,
+    analyzer?.libraryMedianEnrich,
+  );
   log(`Total runtime: ${((performance.now() - t0) / 1000).toFixed(1)}s`, "success");
 
   return {
@@ -376,6 +385,7 @@ export async function runPipeline(req: PipelineRequest): Promise<PipelineResult>
 export function buildRunStatsJson(
   engine: DemultiplexEngine,
   roundNames: ReadonlyArray<string>,
+  pseudocount: number,
   libraryMedianEnrich?: Record<string, number>,
 ): string {
   const rounds: Record<string, RoundStats> = {};
@@ -388,6 +398,12 @@ export function buildRunStatsJson(
     global_unassigned: engine.globalUnassigned,
     unassigned_breakdown: engine.unassignedBreakdown,
     rounds,
+    statistical_model: {
+      enrichment: "log2((RPM_destination + p_RPM) / (RPM_source + p_RPM))",
+      pseudocount,
+      pseudocount_unit: "RPM",
+      variance: "Enrich2-style four-term Poisson delta method with p_RPM converted per library to p_RPM * passed_qc / 1e6 reads",
+    },
   };
   if (libraryMedianEnrich && Object.keys(libraryMedianEnrich).length > 0) {
     payload.library_median_enrich = libraryMedianEnrich;

@@ -75,6 +75,8 @@ export function ConfigureStep() {
   const setMinMeanPhredRead = useNanoporeStore((s) => s.setMinMeanPhredRead);
   const minMeanPhredRoi = useNanoporeStore((s) => s.minMeanPhredRoi);
   const setMinMeanPhredRoi = useNanoporeStore((s) => s.setMinMeanPhredRoi);
+  const pseudocount = useNanoporeStore((s) => s.pseudocount);
+  const setPseudocount = useNanoporeStore((s) => s.setPseudocount);
   const goNext = useNanoporeStore((s) => s.goNext);
   const goPrev = useNanoporeStore((s) => s.goPrev);
 
@@ -373,6 +375,28 @@ export function ConfigureStep() {
                 max={40}
               />
             </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="pseudocount" className="text-xs">
+                Enrichment pseudocount (RPM)
+              </Label>
+              <Input
+                id="pseudocount"
+                type="number"
+                value={pseudocount}
+                onChange={(e) => setPseudocount(Number(e.target.value))}
+                className="font-mono text-xs"
+                min={Number.MIN_VALUE}
+                step={0.5}
+                list="nanopore-pseudocount-options"
+              />
+              <datalist id="nanopore-pseudocount-options">
+                <option value="0.5">Recommended</option>
+                <option value="1">Sensitivity comparison</option>
+              </datalist>
+              <p className="text-[11px] text-muted-foreground">
+                Added after RPM normalization. Recommended: 0.5 RPM; use 1.0 for a sensitivity comparison.
+              </p>
+            </div>
           </div>
         </CardContent>
       </Card>
@@ -382,7 +406,7 @@ export function ConfigureStep() {
           <ArrowLeft className="mr-2 h-4 w-4" />
           Back
         </Button>
-        <Button onClick={goNext} disabled={!canContinue}>
+        <Button onClick={goNext} disabled={!canContinue || !Number.isFinite(pseudocount) || pseudocount <= 0}>
           Continue
           <ArrowRight className="ml-2 h-4 w-4" />
         </Button>

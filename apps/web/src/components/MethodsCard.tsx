@@ -28,7 +28,7 @@
 //     └─────────────────────────────────────┘
 //
 //     ┌─ Method choices ────────────────────┐
-//     │ Pseudocount: 1.00 ...                │
+//     │ Pseudocount (RPM): 0.50 ...          │
 //     └─────────────────────────────────────┘
 //
 //     ─ Variant identity ─
@@ -50,6 +50,7 @@ interface Props {
   settings?: ReadonlyArray<{ label: string; value: string }>;
   libraryMedian?: Record<string, number>;
   hitCounts?: ReadonlyArray<{ label: string; q05: number; q01: number; total: number }>;
+  pseudocount?: number;
   /** Whether the card body is expanded by default. Defaults to false so the
    *  Results page doesn't push the dashboard down on load. */
   defaultOpen?: boolean;
@@ -60,6 +61,7 @@ export function MethodsCard({
   settings,
   libraryMedian,
   hitCounts,
+  pseudocount,
   defaultOpen = false,
 }: Props) {
   const [open, setOpen] = useState(defaultOpen);
@@ -91,7 +93,7 @@ export function MethodsCard({
             <LibraryMedianBlock data={libraryMedian} />
           ) : null}
           {hitCounts && hitCounts.length > 0 ? <HitCountsBlock data={hitCounts} /> : null}
-          <MethodChoices doc={doc} />
+          <MethodChoices doc={doc} pseudocount={pseudocount} />
           {doc.sections.map((section) => (
             <Section key={section.title} title={section.title} columns={section.columns} />
           ))}
@@ -191,14 +193,14 @@ function HitCountsBlock({
   );
 }
 
-function MethodChoices({ doc }: { doc: MethodsDocument }) {
+function MethodChoices({ doc, pseudocount }: { doc: MethodsDocument; pseudocount?: number | undefined }) {
   return (
     <div className="rounded-md border bg-muted/20 p-3">
       <div className="mb-1.5 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
         Method choices
       </div>
       <dl className="space-y-0.5">
-        <Row label="Pseudocount" value={doc.pseudocount.toFixed(2)} />
+        <Row label="Pseudocount (RPM)" value={(pseudocount ?? doc.pseudocount).toFixed(2)} />
         <Row label="P-value test" value={doc.pvalueMethod} />
         <Row label="Multiple testing" value={doc.fdrMethod} />
         <Row label="Centering scheme" value={doc.centeringMethod} />

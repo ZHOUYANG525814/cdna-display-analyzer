@@ -4,10 +4,19 @@
 // single-site (no haplotype) emission, and the haplotype path.
 
 import { describe, expect, it } from "vitest";
-import { runNanoporeAnalyzer } from "../src/nanopore-analyzer.js";
+import {
+  runNanoporeAnalyzer as runNanoporeAnalyzerCore,
+  type NanoporeAnalyzerInput,
+} from "../src/nanopore-analyzer.js";
 import type { NanoporeRoundStats } from "../src/nanopore.js";
 
-const PSEUDO = 1.0;
+const PSEUDO = 0.5;
+
+function runNanoporeAnalyzer(
+  input: Omit<NanoporeAnalyzerInput, "pseudocount"> & { pseudocount?: number },
+) {
+  return runNanoporeAnalyzerCore({ ...input, pseudocount: input.pseudocount ?? PSEUDO });
+}
 
 function makeStats(siteName: string, passedQc: number, hapPassed = 0): NanoporeRoundStats {
   return {
@@ -84,13 +93,13 @@ describe("runNanoporeAnalyzer — single site, single round", () => {
 });
 
 describe("runNanoporeAnalyzer — two rounds, single site (enrichment math)", () => {
-  it("Fitness_vs_WT matches the hand-computed log2((c_i+1)/(wt_i+1) / (c_0+1)/(wt_0+1))", () => {
+  it("Fitness_vs_WT matches the hand-computed RPM-pseudocount ratio", () => {
     // Setup: 100 reads per round.
     // R0: WT=50, TGG=10 → variant frequency 10/100, WT freq 50/100 → ratio 0.2
     // R1: WT=20, TGG=60 → variant frequency 60/100, WT freq 20/100 → ratio 3
     // Fitness_vs_WT(R1) = log2(3 / 0.2) ≈ log2(15) ≈ 3.906... (without pseudocount)
-    // With pseudocount 1: log2(((60+1)/(20+1)) / ((10+1)/(50+1)))
-    //                   = log2((61/21) / (11/51)) ≈ log2(13.46) ≈ 3.751
+    // With the default pseudocount 0.5 RPM, all four abundance terms use
+    // the same globally comparable smoothing unit.
     const out = runNanoporeAnalyzer({
       roundNames: ["R0", "R1"],
       siteNames: ["site_1"],
@@ -108,7 +117,10 @@ describe("runNanoporeAnalyzer — two rounds, single site (enrichment math)", ()
     });
 
     const tgg = out.perSiteRows.find((r) => r.Variant_AA === "W")!;
-    const expectedFitness = Math.log2(((60 + PSEUDO) / (20 + PSEUDO)) / ((10 + PSEUDO) / (50 + PSEUDO)));
+    const expectedFitness = Math.log2(
+      ((600_000 + PSEUDO) / (200_000 + PSEUDO)) /
+      ((100_000 + PSEUDO) / (500_000 + PSEUDO)),
+    );
     expect(tgg.Fitness_vs_WT_R1).toBeCloseTo(expectedFitness, 9);
 
     // Sort: TGG (W, higher fitness) should be rank 0 in the output rows.
@@ -121,11 +133,12 @@ describe("runNanoporeAnalyzer — two rounds, single site (enrichment math)", ()
     expect(wt.Fitness_vs_WT_R1).toBeCloseTo(0, 9);
 
     // Phase 6.16: Enrich_Global column removed; sanity is now on Var_Fitness.
-    // Var_Fitness = (1/ln 2)² × [1/(c_v_r+1) + 1/(wt_r+1) + 1/(c_v_0+1) + 1/(wt_0+1)]
-    // For TGG: counts (60, 20, 10, 50) → σ² = (1/ln2)² × (1/61 + 1/21 + 1/11 + 1/51).
+    // Var_Fitness converts 0.5 RPM to the per-library count equivalent.
     const INV_LN2 = 1 / Math.LN2;
+    const q = PSEUDO * 100 / 1e6;
     const expectedVar =
-      INV_LN2 * INV_LN2 * (1 / 61 + 1 / 21 + 1 / 11 + 1 / 51);
+      INV_LN2 * INV_LN2 *
+      (1 / (60 + q) + 1 / (20 + q) + 1 / (10 + q) + 1 / (50 + q));
     expect(tgg.Var_Fitness_R1).toBeCloseTo(expectedVar, 10);
 
     // Rank_<r> dropped in Phase 6.12. Verify the abundance ordering via Count
@@ -227,8 +240,12 @@ describe("runNanoporeAnalyzer — haplotype output", () => {
     const doubleMut = out.haplotypeRows[0]!;
     // Expected Fitness_vs_WT_R1 for W_L:
     //   c=40, wt=10 in R1; c=5, wt=40 in R0.
-    //   log2(((40+1)/(10+1)) / ((5+1)/(40+1)))
-    const expectedFitness = Math.log2(((40 + PSEUDO) / (10 + PSEUDO)) / ((5 + PSEUDO) / (40 + PSEUDO)));
+    //   log2(((RPM_variant_R1+p)/(RPM_WT_R1+p)) /
+    //        ((RPM_variant_R0+p)/(RPM_WT_R0+p)))
+    const expectedFitness = Math.log2(
+      ((((40 / 55) * 1e6) + PSEUDO) / (((10 / 55) * 1e6) + PSEUDO)) /
+      ((((5 / 50) * 1e6) + PSEUDO) / (((40 / 50) * 1e6) + PSEUDO)),
+    );
     expect(doubleMut.Fitness_vs_WT_R1).toBeCloseTo(expectedFitness, 9);
 
     // WT_WT row has fitness 0 vs itself.

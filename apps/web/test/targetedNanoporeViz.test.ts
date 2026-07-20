@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { log2RpmRatio } from "@cdna/core";
 import { targetedRowsToChartRows } from "../src/tools/nanopore-targeted/viz";
 
 describe("targeted Nanopore chart adapter", () => {
@@ -9,9 +10,9 @@ describe("targeted Nanopore chart adapter", () => {
       "Count_Round 1": 40, "RPM_Round 1": 800,
       "Centered_Enrichment_Round 1_vs_Round 0": 2.5, "Pval_Enrichment_Round 1_vs_Round 0": .001,
       "FDR_q_Round 1_vs_Round 0": .01, "Var_Enrichment_Round 1_vs_Round 0": .2,
-    }], ["Round 0", "Round 1"]);
+    }], ["Round 0", "Round 1"], 0.5);
     expect(row!.peptide).toBe("R116:F");
-    expect(row!.stepwise["Round 1"]).toBeCloseTo(Math.log2(801 / 101));
+    expect(row!.stepwise["Round 1"]).toBeCloseTo(log2RpmRatio(40, 40, 10, 10, 0.5));
     expect(row!.centered["Round 1"]).toBe(2.5);
     expect(row!.fdr["Round 1"]).toBe(.01);
   });

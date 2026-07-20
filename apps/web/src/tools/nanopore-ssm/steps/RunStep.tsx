@@ -43,6 +43,7 @@ export function RunStep() {
   const reportHaplotype = useNanoporeStore((s) => s.reportHaplotype);
   const minMeanPhredRead = useNanoporeStore((s) => s.minMeanPhredRead);
   const minMeanPhredRoi = useNanoporeStore((s) => s.minMeanPhredRoi);
+  const pseudocount = useNanoporeStore((s) => s.pseudocount);
   const status = useNanoporeStore((s) => s.status);
   const log = useNanoporeStore((s) => s.log);
   const perSourceBytes = useNanoporeStore((s) => s.perSourceBytes);
@@ -173,6 +174,7 @@ export function RunStep() {
             minMeanPhredRead,
             minMeanPhredRoi,
             reportHaplotype,
+            pseudocount,
           },
           mode: pipelineMode,
           ...(pipelineMode === "per-round" ? { sourceRoundIndices } : {}),

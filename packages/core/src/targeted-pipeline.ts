@@ -22,6 +22,7 @@ const DEC = new TextDecoder("latin1");
 export interface TargetedPipelineSettings extends TargetedQcSettings {
   minTargetBaseQ: number;
   minInputCountToScore: number;
+  pseudocount: number;
   reportHaplotypes: boolean;
   rescueFlankBases?: number;
 }
@@ -203,6 +204,7 @@ export async function runTargetedNanoporePipeline(req: TargetedPipelineRequest):
     sites: sites.map((s) => ({ name: s.name, wtDna: s.wtDna })), emitHaplotype: req.settings.reportHaplotypes,
     minBaselineCountToScore: req.settings.minInputCountToScore,
     displayMode: "targeted-aa",
+    pseudocount: req.settings.pseudocount,
   });
   const exactCodonCsvParts = buildExactCodonCsv(req.roundNames, sites, dnaCounters, stats);
   const exactHaplotypeCsvParts = req.settings.reportHaplotypes

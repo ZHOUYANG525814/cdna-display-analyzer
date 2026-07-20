@@ -157,9 +157,11 @@ export function buildQcReport(outcome: PipelineOutcome, projectName: string): st
     { label: "Min mean read Phred", value: `≥ ${s.minMeanPhred.toFixed(1)}` },
     { label: "Min mean CDS Phred", value: `≥ ${s.minMeanPhredCds.toFixed(1)}` },
     { label: "Discard premature stops", value: s.filterStop ? "yes" : "no" },
+    { label: "Enrichment pseudocount (RPM)", value: s.pseudocount.toString() },
   ];
   const methodsText = formatMethodsAsText(CDNA_METHODS, {
     settings,
+    pseudocount: s.pseudocount,
     libraryMedian: outcome.libraryMedianEnrich,
     hitCounts: outcome.hitCounts,
   });

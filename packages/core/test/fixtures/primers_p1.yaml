@@ -1,0 +1,15 @@
+rounds:
+  Round_0:
+    fw_primer: GTCAATGCCTAGAGGCTCAGATCG
+    rv_primer: GCATCGATCGATCGATCGATTG
+    cds_start: 1
+    cds_end: 57
+  Round_1:
+    fw_primer: GTCAATGCCTAGAGGCTCAGATTG
+    rv_primer: GCATCGATCGATCGATCGATTG
+    cds_start: 1
+    cds_end: 54
+settings:
+  adaptive: true
+  filter_stop: true
+  pseudocount: 1.0

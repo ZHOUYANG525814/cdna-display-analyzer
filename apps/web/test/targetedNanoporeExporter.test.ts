@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { TARGETED_EXPORT_FILES, buildFilterFunnelCsv, buildRunStats, buildSiteCallabilityCsv, buildTargetedQcReport } from "../src/adapters/TargetedNanoporeExporter";
+import { TARGETED_EXPORT_FILES, buildFilterFunnelCsv, buildLockedConfig, buildRunStats, buildSiteCallabilityCsv, buildTargetedQcReport, parseLockedConfig } from "../src/adapters/TargetedNanoporeExporter";
 import type { TargetedNanoporeOutcome } from "../src/worker/types";
 import { buildTargetedSankeyData } from "../src/tools/nanopore-targeted/viz";
+import { useTargetedNanoporeStore } from "../src/state/useTargetedNanoporeStore";
 
 const emptyDrops = { low_read_q: 1, partial_reference: 2, low_alignment_identity: 3, low_protected_identity: 4, protected_indel: 5, alignment_failed: 6, duplicate_read_id: 7, concatemer_or_chimera: 8, malformed_fastq: 14 };
 const outcome = {
@@ -14,11 +15,20 @@ const outcome = {
   }])), fileStats: [], libraryMedianFitness: {}, hitCounts: [], perSiteCsvBlob: null, haplotypeCsvBlob: null, exactCodonCsvBlob: null, exactHaplotypeCsvBlob: null, perSiteRowsPreview: [], haplotypeRowsPreview: [], perSiteRowsForViz: [], exactCodonCounts: { "Round 0": { A1: { GCT: 40 } } }, exactHaplotypeCounts: { "Round 0": {} }, haplotypeStatistics: [],
 } as TargetedNanoporeOutcome;
 
-const snapshot = { projectName: "audit", referenceSeq: "GCT".repeat(20), cdsStart: 1, cdsEnd: 60, cdsStrand: "+" as const, sites: [{ id: "s", name: "site_01", ntStart: 1 }], settings: { minReadQ: 10, minReferenceCoverage: .9, minAlignmentIdentity: .85, minProtectedIdentity: .95, maxProtectedIndelBases: 30, minTargetBaseQ: 15, minInputCountToScore: 10 }, reportHaplotypes: false, startedAt: null, finishedAt: null };
+const snapshot = {
+  projectName: "audit", referenceSeq: "GCT".repeat(20), cdsStart: 1, cdsEnd: 60, cdsStrand: "+" as const,
+  sites: [{ id: "s", name: "site_01", ntStart: 1 }],
+  rounds: [
+    { id: "r0", round: 0, files: [{ id: "f0", file: new File(["x"], "input.fastq"), driveRef: null, expectedFileName: null }] },
+    { id: "r1", round: 1, files: [{ id: "f1", file: null, driveRef: { id: "secret-drive-id", name: "selected.fastq.gz", sizeBytes: 123 }, expectedFileName: null }] },
+  ],
+  settings: { minReadQ: 10, minReferenceCoverage: .9, minAlignmentIdentity: .85, minProtectedIdentity: .95, maxProtectedIndelBases: 30, minTargetBaseQ: 15, minInputCountToScore: 10, pseudocount: 0.5 },
+  reportHaplotypes: false, startedAt: null, finishedAt: null,
+};
 
 describe("targeted Nanopore result artifacts", () => {
   it("matches the NGS three-artifact download contract without losing DNA aggregates", () => {
-    expect(TARGETED_EXPORT_FILES.map(([name]) => name)).toEqual(["Master_Enrichment_Matrix.csv.gz", "Combination_Enrichment_Matrix.csv.gz", "run_stats.json", "QC_Summary_Report.txt"]);
+    expect(TARGETED_EXPORT_FILES.map(([name]) => name)).toEqual(["Master_Enrichment_Matrix.csv.gz", "Combination_Enrichment_Matrix.csv.gz", "run_stats.json", "QC_Summary_Report.txt", "locked_config.json"]);
     const stats = buildRunStats(outcome, snapshot);
     expect(stats.exactCodonCounts["Round 0"]!.A1!.GCT).toBe(40);
     expect(stats).toHaveProperty("targetCallability");
@@ -26,6 +36,48 @@ describe("targeted Nanopore result artifacts", () => {
     expect(stats.statsByRound["Round 0"]).toHaveProperty("targets.A1");
     expect(stats.statsByRound["Round 0"]).not.toHaveProperty("sites");
     expect(stats).toHaveProperty("filterFunnel");
+  });
+  it("round-trips locked settings while serializing filenames only", () => {
+    const locked = buildLockedConfig(snapshot);
+    const serialized = JSON.stringify(locked);
+    expect(locked.calculationModel).toBe("rpm-pseudocount-v1");
+    expect(locked.pseudocountUnit).toBe("RPM");
+    expect(serialized).toContain("input.fastq");
+    expect(serialized).toContain("selected.fastq.gz");
+    expect(serialized).not.toContain("secret-drive-id");
+    expect(serialized).not.toContain("sizeBytes");
+    expect(serialized).not.toContain("startedAt");
+    const imported = parseLockedConfig(serialized);
+    expect(imported.settings.pseudocount).toBe(0.5);
+    expect(imported.rounds.map((round) => round.expectedFileNames)).toEqual([
+      ["input.fastq"],
+      ["selected.fastq.gz"],
+    ]);
+    useTargetedNanoporeStore.getState().loadLockedConfig(imported);
+    const state = useTargetedNanoporeStore.getState();
+    const rebuilt = buildLockedConfig({
+      projectName: state.projectName,
+      referenceSeq: state.referenceSeq,
+      cdsStart: state.cdsStart,
+      cdsEnd: state.cdsEnd,
+      cdsStrand: state.cdsStrand,
+      sites: state.sites,
+      rounds: state.rounds,
+      settings: state.settings,
+      reportHaplotypes: state.reportHaplotypes,
+      startedAt: null,
+      finishedAt: null,
+    });
+    expect(rebuilt).toEqual(locked);
+  });
+  it("rejects unsupported or unsafe locked configs", () => {
+    const locked = buildLockedConfig(snapshot);
+    expect(() => parseLockedConfig(JSON.stringify({ ...locked, schemaVersion: "v0" }))).toThrow(/schema/i);
+    const withBadName = {
+      ...locked,
+      rounds: [{ round: 0, expectedFileNames: ["../../reads.fastq"] }, locked.rounds[1]],
+    };
+    expect(() => parseLockedConfig(JSON.stringify(withBadName))).toThrow(/filename|Round 0/i);
   });
   it("exports exclusive and target-specific QC without dropping reason columns", () => {
     expect(buildFilterFunnelCsv(outcome)).toContain("low_alignment_identity");
@@ -47,6 +99,6 @@ describe("targeted Nanopore result artifacts", () => {
     expect(report).toContain("MULTI-TARGET COMBINATION ENRICHMENT");
     expect(report).toContain("R233W|A304V|G331D");
     expect(report).toContain("Without biological replicates");
-    expect(report).toContain("two-count Poisson");
+    expect(report).toContain("four-term Poisson");
   });
 });

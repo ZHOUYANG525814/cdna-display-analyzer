@@ -1,4 +1,4 @@
-import type { NanoporeAnalyzerRow } from "@cdna/core";
+import { log2RpmRatio, type NanoporeAnalyzerRow } from "@cdna/core";
 import type { PeptideRecord } from "@/tools/cdna-display/viz/csvParse";
 import type { TargetedNanoporeOutcome } from "@/worker/types";
 
@@ -25,7 +25,20 @@ export function buildTargetedSankeyData(outcome: TargetedNanoporeOutcome): { nod
 /** Adapt the targeted round-to-baseline enrichment table to the shared NGS chart contract.
  * `peptide` includes the target label so points from distinct target-scoped FDR
  * families remain identifiable. */
-export function targetedRowsToChartRows(rows: ReadonlyArray<NanoporeAnalyzerRow>, rounds: ReadonlyArray<string>): PeptideRecord[] {
+export function targetedRowsToChartRows(
+  rows: ReadonlyArray<NanoporeAnalyzerRow>,
+  rounds: ReadonlyArray<string>,
+  pseudocount: number,
+): PeptideRecord[] {
+  const totalsByTarget = new Map<string, Record<string, number>>();
+  for (const row of rows) {
+    const target = String(row.Target);
+    const totals = totalsByTarget.get(target) ?? {};
+    for (const round of rounds) {
+      totals[round] = (totals[round] ?? 0) + finite(row[`Count_${round}`]);
+    }
+    totalsByTarget.set(target, totals);
+  }
   return rows.map((row) => {
     const count: Record<string, number> = {}, rpm: Record<string, number> = {};
     const stepwise: Record<string, number> = {}, centered: Record<string, number> = {};
@@ -37,7 +50,14 @@ export function targetedRowsToChartRows(rows: ReadonlyArray<NanoporeAnalyzerRow>
       if (i > 0) {
         const prev = rounds[i - 1]!;
         const first = rounds[0]!;
-        stepwise[round] = Math.log2((rpm[round]! + 1) / (rpm[prev]! + 1));
+        const totals = totalsByTarget.get(String(row.Target))!;
+        stepwise[round] = log2RpmRatio(
+          count[round]!,
+          totals[round]!,
+          count[prev]!,
+          totals[prev]!,
+          pseudocount,
+        );
         centered[round] = finite(row[`Centered_Enrichment_${round}_vs_${first}`]);
         pval[round] = finite(row[`Pval_Enrichment_${round}_vs_${first}`], 1);
         fdr[round] = finite(row[`FDR_q_${round}_vs_${first}`], 1);

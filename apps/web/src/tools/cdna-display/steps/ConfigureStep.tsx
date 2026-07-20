@@ -37,6 +37,8 @@ export function ConfigureStep() {
     setMinMeanPhred,
     minMeanPhredCds,
     setMinMeanPhredCds,
+    pseudocount,
+    setPseudocount,
     pipelineMode,
     goPrev,
     goNext,
@@ -269,6 +271,28 @@ export function ConfigureStep() {
                 max={40}
               />
             </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="pseudocount" className="text-xs">
+                Enrichment pseudocount (RPM)
+              </Label>
+              <Input
+                id="pseudocount"
+                type="number"
+                value={pseudocount}
+                onChange={(e) => setPseudocount(Number(e.target.value))}
+                className="font-mono text-xs"
+                min={Number.MIN_VALUE}
+                step={0.5}
+                list="pseudocount-options"
+              />
+              <datalist id="pseudocount-options">
+                <option value="0.5">Recommended</option>
+                <option value="1">Historical RPM+1</option>
+              </datalist>
+              <p className="text-[11px] text-muted-foreground">
+                Added after RPM normalization. Recommended: 0.5 RPM; use 1.0 to reproduce RPM+1 scores.
+              </p>
+            </div>
           </div>
           {/* The "Adaptive" toggle was removed in Phase 6.11: when disabled,
               the engine ran an exact 10-bp Rv-anchor scan that produced more
@@ -296,7 +320,7 @@ export function ConfigureStep() {
         </Button>
         <Button
           size="lg"
-          disabled={!refValid || !allRoundsValid}
+          disabled={!refValid || !allRoundsValid || !Number.isFinite(pseudocount) || pseudocount <= 0}
           onClick={goNext}
         >
           Continue to Preview <ArrowRight className="ml-1.5 h-4 w-4" />

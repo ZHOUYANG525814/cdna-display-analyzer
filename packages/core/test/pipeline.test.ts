@@ -64,7 +64,7 @@ describe("runPipeline (end-to-end on in-memory source)", () => {
       { id: "r3", seq: "GGGGG" + "AAAAACCCCC" + "ATGTCATTT" + "TTTT" }, // different peptide
     ]);
     const src = makeSource("test.fastq", fq);
-    const result = await runPipeline({ sources: [src], rounds: [ROUND], settings: STRICT });
+    const result = await runPipeline({ sources: [src], rounds: [ROUND], settings: STRICT, pseudocount: 0.5 });
     expect(result.stats.get("R0")!.passed_qc).toBe(3);
     expect(result.dnaCounters.get("R0")!.get("ATGGCCAAA")).toBe(2);
     expect(result.dnaCounters.get("R0")!.get("ATGTCATTT")).toBe(1);
@@ -77,7 +77,7 @@ describe("runPipeline (end-to-end on in-memory source)", () => {
     const rc = "AAAA" + "TTTGGCCAT" + "GGGGGTTTTT" + "CCCCC";
     const fq = mkFastq([{ id: "anti", seq: rc }]);
     const src = makeSource("test.fastq", fq);
-    const result = await runPipeline({ sources: [src], rounds: [ROUND], settings: STRICT });
+    const result = await runPipeline({ sources: [src], rounds: [ROUND], settings: STRICT, pseudocount: 0.5 });
     expect(result.stats.get("R0")!.passed_qc).toBe(1);
     expect(result.globalUnassigned).toBe(0);
   });
@@ -88,7 +88,7 @@ describe("runPipeline (end-to-end on in-memory source)", () => {
     const qual = "4".repeat(seq.length);
     const fq = `@r1\n${seq}\n+\n${qual}\n`;
     const src = makeSource("test.fastq", fq);
-    const result = await runPipeline({ sources: [src], rounds: [ROUND], settings: STRICT });
+    const result = await runPipeline({ sources: [src], rounds: [ROUND], settings: STRICT, pseudocount: 0.5 });
     expect(result.stats.get("R0")!.passed_qc).toBe(0);
     expect(result.unassignedBreakdown.low_quality).toBe(1);
     expect(result.globalUnassigned).toBe(1);
@@ -97,11 +97,19 @@ describe("runPipeline (end-to-end on in-memory source)", () => {
   it("produces run_stats.json matching the Python schema (sorted keys, indent=2)", async () => {
     const fq = mkFastq([{ id: "r1", seq: "GGGGG" + "AAAAACCCCC" + "ATGGCCAAA" + "TTTT" }]);
     const src = makeSource("test.fastq", fq);
-    const result = await runPipeline({ sources: [src], rounds: [ROUND], settings: STRICT });
+    const result = await runPipeline({ sources: [src], rounds: [ROUND], settings: STRICT, pseudocount: 0.5 });
 
     // Schema: top-level keys sorted alphabetically.
     const parsed = JSON.parse(result.runStatsJson);
-    expect(Object.keys(parsed)).toEqual(["global_unassigned", "rounds", "schema_version", "unassigned_breakdown"]);
+    expect(Object.keys(parsed)).toEqual([
+      "global_unassigned",
+      "rounds",
+      "schema_version",
+      "statistical_model",
+      "unassigned_breakdown",
+    ]);
+    expect(parsed.statistical_model.pseudocount).toBe(0.5);
+    expect(parsed.statistical_model.pseudocount_unit).toBe("RPM");
 
     // Per-round stats keys sorted too.
     const rndKeys = Object.keys(parsed.rounds.R0);
@@ -120,7 +128,7 @@ describe("runPipeline (end-to-end on in-memory source)", () => {
       { id: "r2", seq: "GGGGG" + "AAAAACCCCC" + "ATGGCCAAA" + "TTTT" },
     ]);
     const src = makeSource("test.fastq", fq, 1);
-    const result = await runPipeline({ sources: [src], rounds: [ROUND], settings: STRICT });
+    const result = await runPipeline({ sources: [src], rounds: [ROUND], settings: STRICT, pseudocount: 0.5 });
     expect(result.stats.get("R0")!.passed_qc).toBe(2);
   });
 
@@ -131,6 +139,7 @@ describe("runPipeline (end-to-end on in-memory source)", () => {
       sources: [makeSource("a", fq1), makeSource("b", fq2)],
       rounds: [ROUND],
       settings: STRICT,
+      pseudocount: 0.5,
     });
     expect(result.stats.get("R0")!.passed_qc).toBe(2);
     expect(result.dnaCounters.get("R0")!.get("ATGGCCAAA")).toBe(2);

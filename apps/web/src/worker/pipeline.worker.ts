@@ -141,6 +141,7 @@ const api = {
         sources,
         rounds: job.rounds,
         settings: job.settings,
+        pseudocount: job.pseudocount,
         useWasm: job.useWasm,
         onProgress: wrappedProgress,
         ...(onLog ? { onLog } : {}),

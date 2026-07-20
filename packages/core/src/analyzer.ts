@@ -13,11 +13,13 @@
 import { translateDna } from "./dna.js";
 import type { RoundStats } from "./demultiplex.js";
 import {
+  assertValidPseudocount,
   benjaminiHochberg,
+  log2RpmRatio,
   median,
-  seLog2Ratio,
+  seLog2RpmRatio,
   twoSidedPvalue,
-  varLog2Ratio,
+  varLog2RpmRatio,
 } from "./stats.js";
 
 export interface AnalyzerInput {
@@ -26,6 +28,9 @@ export interface AnalyzerInput {
   dnaCounters: ReadonlyMap<string, ReadonlyMap<string, number>>;
   // round name → demultiplex stats (only passed_qc is read; it's the RPM denominator)
   stats: ReadonlyMap<string, RoundStats>;
+  /** Explicit analysis pseudocount. Product default is 0.5; 1.0 remains
+   *  available for sensitivity and historical comparison. */
+  pseudocount: number;
 }
 
 export type RowValue = string | number | boolean;
@@ -46,7 +51,7 @@ export interface AnalyzerRow {
 export interface AnalyzerOutput {
   rows: AnalyzerRow[];
   columns: ReadonlyArray<ColumnSpec>;
-  /** Library-wide median of the raw `log₂((RPM_<r>+1)/(RPM_<first>+1))` for
+  /** Library-wide median of the raw log₂((RPM+p)/(RPM₀+p)) ratio for
    *  each non-first round — the centering offset that produces Centered_Enrich.
    *  Exposed so the Methods card / run_stats.json can flag rounds where the
    *  median sits far from zero (which signals a stringent-selection regime
@@ -96,9 +101,9 @@ export function buildColumnSpecs(roundNames: ReadonlyArray<string>): ColumnSpec[
       const curr = roundNames[i];
       cols.push({ name: `Centered_Enrich_${curr}_vs_${first}`, type: "float" });
     }
-    // Inference triple (Z / Pval / FDR_q) computed against the raw log2 fold-
-    // change (centering shifts the mean but not the SE, so Z is the same
-    // either way). NegLog10Pval dropped — `−log10(Pval)` is one CSV column
+    // Inference triple (Z / Pval / FDR_q) is intentionally computed against
+    // the raw log2 fold-change. Centering changes the numerator and therefore
+    // must not be substituted into Z. NegLog10Pval dropped — `−log10(Pval)` is one CSV column
     // away from any consumer who needs it.
     for (let i = 1; i < roundNames.length; i++) {
       const curr = roundNames[i];
@@ -133,7 +138,8 @@ interface AaRecord {
 }
 
 export function runAnalyzer(input: AnalyzerInput): AnalyzerOutput | null {
-  const { roundNames, dnaCounters, stats } = input;
+  const { roundNames, dnaCounters, stats, pseudocount } = input;
+  assertValidPseudocount(pseudocount);
 
   // 1. Collapse DNA → AA across all rounds. Iteration order: roundNames as
   //    given, then dnaCounter Map insertion order (which mirrors Python's
@@ -191,16 +197,18 @@ export function runAnalyzer(input: AnalyzerInput): AnalyzerOutput | null {
     }
   }
 
-  // 4. Enrichment: stepwise then global. Pseudocount 1.0 inside the log.
-  const PSEUDO = 1.0;
+  // 4. Enrichment: RPM-normalized ratio, stepwise then global. Pseudocount
+  // is expressed in RPM so its meaning is stable across library depths.
   for (let i = 1; i < roundNames.length; i++) {
     const prev = roundNames[i - 1]!;
     const curr = roundNames[i]!;
     const col = `Enrich_Step_${curr}_vs_${prev}`;
+    const nPrev = stats.get(prev)?.passed_qc ?? 0;
+    const nCurr = stats.get(curr)?.passed_qc ?? 0;
     for (const row of rows) {
-      const a = row[`RPM_${curr}`] as number;
-      const b = row[`RPM_${prev}`] as number;
-      row[col] = Math.log2((a + PSEUDO) / (b + PSEUDO));
+      const cCurr = row[`Count_${curr}`] as number;
+      const cPrev = row[`Count_${prev}`] as number;
+      row[col] = log2RpmRatio(cCurr, nCurr, cPrev, nPrev, pseudocount);
     }
   }
   const first = roundNames[0];
@@ -224,15 +232,15 @@ export function runAnalyzer(input: AnalyzerInput): AnalyzerOutput | null {
       // across all variants, which we compute after this pass.
       const rawEnrich: number[] = new Array(rows.length);
       const pvals: number[] = new Array(rows.length);
+      const nCurr = stats.get(curr)?.passed_qc ?? 0;
+      const nFirst = stats.get(first)?.passed_qc ?? 0;
       for (let r = 0; r < rows.length; r++) {
         const row = rows[r]!;
         const cCurr = row[`Count_${curr}`] as number;
         const cFirst = row[`Count_${first}`] as number;
-        const rpmCurr = row[`RPM_${curr}`] as number;
-        const rpmFirst = row[`RPM_${first}`] as number;
-        const enrich = Math.log2((rpmCurr + PSEUDO) / (rpmFirst + PSEUDO));
-        const variance = varLog2Ratio(cCurr, cFirst, PSEUDO);
-        const se = seLog2Ratio(cCurr, cFirst, PSEUDO);
+        const enrich = log2RpmRatio(cCurr, nCurr, cFirst, nFirst, pseudocount);
+        const variance = varLog2RpmRatio(cCurr, nCurr, cFirst, nFirst, pseudocount);
+        const se = seLog2RpmRatio(cCurr, nCurr, cFirst, nFirst, pseudocount);
         // SE ≈ 0 implies overwhelming evidence (huge counts). Pick a tiny
         // floor instead of dividing by 0; Z stays large but finite.
         const safeSe = se > 1e-12 ? se : 1e-12;

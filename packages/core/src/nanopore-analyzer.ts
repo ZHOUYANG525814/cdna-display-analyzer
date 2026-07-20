@@ -16,11 +16,9 @@
 //   - RPM denominator is per-site `passed_qc` (analyzer is the only consumer
 //     of this counter — total_reads isn't tracked because RC-retry would
 //     double-count it).
-//   - Enrich_Global_<round> = log2((RPM_round + 1) / (RPM_round_0 + 1))
-//   - Fitness_vs_WT_<round> = log2( ((count + 1) / (wt_count_round + 1)) /
-//                                   ((count_round_0 + 1) / (wt_count_round_0 + 1)) )
-//     (DiMSum / Enrich2 convention; pseudocount 1.0 on every term so the
-//     formula is defined even when a variant or WT has zero reads in a round)
+//   - Targeted enrichment uses log2((RPM_round+p)/(RPM_round_0+p)).
+//   - Legacy Fitness_vs_WT uses the same RPM pseudocount on the variant and
+//     reference-state RPM values in both rounds.
 //
 // Sort order: per-site rows sort by Site (input order), then within each
 // site by Fitness_vs_WT_<lastRound> desc with Variant_AA asc as the
@@ -31,16 +29,17 @@ import { translateDna } from "./dna.js";
 import { serializeCsv, type AnalyzerRow, type ColumnSpec, type RowValue } from "./analyzer.js";
 import type { NanoporeRoundStats } from "./nanopore.js";
 import {
+  assertValidPseudocount,
   benjaminiHochberg,
+  log2RpmRatio,
+  log2RpmWtRatio,
   median,
-  seLog2Ratio,
-  seLog2WtRatio,
+  seLog2RpmRatio,
+  seLog2RpmWtRatio,
   twoSidedPvalue,
-  varLog2Ratio,
-  varLog2WtRatio,
+  varLog2RpmRatio,
+  varLog2RpmWtRatio,
 } from "./stats.js";
-
-const PSEUDO = 1.0;
 
 export interface NanoporeAnalyzerInput {
   /** Round insertion order. Used for column ordering AND as the reference
@@ -63,6 +62,8 @@ export interface NanoporeAnalyzerInput {
    * self-describing combination keys (R233W|A304V). Legacy SSM keeps its
    * historical Site/Haplotype columns. */
   displayMode?: "legacy" | "targeted-aa";
+  /** Explicit RPM-unit pseudocount for auditability. Default is 0.5 RPM. */
+  pseudocount: number;
 }
 
 export interface NanoporeAnalyzerRow {
@@ -95,6 +96,7 @@ interface AaAgg {
 }
 
 export function runNanoporeAnalyzer(input: NanoporeAnalyzerInput): NanoporeAnalyzerOutput {
+  assertValidPseudocount(input.pseudocount);
   // Accumulator: keyed by `${siteName}:${round}` for per-site medians and
   // `__haplotype__:${round}` for haplotype medians. Pipeline lifts this into
   // run_stats.json so users can spot a systematic library shift.
@@ -188,7 +190,7 @@ function aggregatePerSite(
 
   // ---- Pass 1: per-variant counts + per-round Fitness_vs_WT.
   //   Enrich_Global column removed in Phase 6.16 (recoverable as
-  //   log₂((RPM+1)/(RPM₀+1)) if a consumer ever needs it).
+  //   log₂((RPM+p)/(RPM₀+p)) if needed).
   const rows: NanoporeAnalyzerRow[] = [];
   for (const agg of aaMap.values()) {
     const dominantDna = pickDominant(agg.dnaTotals);
@@ -199,6 +201,7 @@ function aggregatePerSite(
     };
     const c0 = agg.perRound.get(firstRound) ?? 0;
     const wt0 = wtCounts.get(firstRound) ?? 0;
+    const n0 = denom.get(firstRound) ?? 0;
     for (const round of input.roundNames) {
       const c = agg.perRound.get(round) ?? 0;
       const denomR = denom.get(round) ?? 0;
@@ -207,8 +210,8 @@ function aggregatePerSite(
       row[`Count_${round}`] = c;
       row[`RPM_${round}`] = rpm;
       if (input.displayMode !== "targeted-aa") {
-        row[`Fitness_vs_WT_${round}`] = Math.log2(
-          ((c + PSEUDO) / (wtR + PSEUDO)) / ((c0 + PSEUDO) / (wt0 + PSEUDO)),
+        row[`Fitness_vs_WT_${round}`] = log2RpmWtRatio(
+          c, wtR, denomR, c0, wt0, n0, input.pseudocount,
         );
       }
     }
@@ -240,8 +243,10 @@ function aggregatePerSite(
       const row = rows[rowIndex]!;
       const cR = row[`Count_${round}`] as number;
       const c0 = c0Cache[String(row.Variant_AA)] ?? 0;
+      const nR = denom.get(round) ?? 0;
+      const n0 = denom.get(firstRound) ?? 0;
       const score = targeted
-        ? Math.log2((((row[`RPM_${round}`] as number) + PSEUDO) / ((row[`RPM_${firstRound}`] as number) + PSEUDO)))
+        ? log2RpmRatio(cR, nR, c0, n0, input.pseudocount)
         : row[fitnessCol] as number;
       if (targeted) row[fitnessCol] = score;
       const eligible = c0 >= (input.minBaselineCountToScore ?? 0);
@@ -252,8 +257,12 @@ function aggregatePerSite(
         row[varCol] = "";
         continue;
       }
-      const variance = targeted ? varLog2Ratio(cR, c0, PSEUDO) : varLog2WtRatio(cR, wtR, c0, wt0, PSEUDO);
-      const se = targeted ? seLog2Ratio(cR, c0, PSEUDO) : seLog2WtRatio(cR, wtR, c0, wt0, PSEUDO);
+      const variance = targeted
+        ? varLog2RpmRatio(cR, nR, c0, n0, input.pseudocount)
+        : varLog2RpmWtRatio(cR, wtR, nR, c0, wt0, n0, input.pseudocount);
+      const se = targeted
+        ? seLog2RpmRatio(cR, nR, c0, n0, input.pseudocount)
+        : seLog2RpmWtRatio(cR, wtR, nR, c0, wt0, n0, input.pseudocount);
       const safeSe = se > 1e-12 ? se : 1e-12;
       const z = score / safeSe;
       const p = twoSidedPvalue(z);
@@ -361,6 +370,7 @@ function aggregateHaplotypes(
     } : { Haplotype_AA: agg.aa, Haplotype_DNA: dominantDna };
     const c0 = agg.perRound.get(firstRound) ?? 0;
     const wt0 = wtCounts.get(firstRound) ?? 0;
+    const n0 = denom.get(firstRound) ?? 0;
     for (const round of input.roundNames) {
       const c = agg.perRound.get(round) ?? 0;
       const denomR = denom.get(round) ?? 0;
@@ -369,8 +379,8 @@ function aggregateHaplotypes(
       row[`Count_${round}`] = c;
       row[`RPM_${round}`] = rpm;
       if (input.displayMode !== "targeted-aa") {
-        row[`Fitness_vs_WT_${round}`] = Math.log2(
-          ((c + PSEUDO) / (wtR + PSEUDO)) / ((c0 + PSEUDO) / (wt0 + PSEUDO)),
+        row[`Fitness_vs_WT_${round}`] = log2RpmWtRatio(
+          c, wtR, denomR, c0, wt0, n0, input.pseudocount,
         );
       }
     }
@@ -396,8 +406,10 @@ function aggregateHaplotypes(
       const row = rows[rowIndex]!;
       const cR = row[`Count_${round}`] as number;
       const c0 = row[`Count_${firstRound}`] as number;
+      const nR = denom.get(round) ?? 0;
+      const n0 = denom.get(firstRound) ?? 0;
       const score = targeted
-        ? Math.log2((((row[`RPM_${round}`] as number) + PSEUDO) / ((row[`RPM_${firstRound}`] as number) + PSEUDO)))
+        ? log2RpmRatio(cR, nR, c0, n0, input.pseudocount)
         : row[fitnessCol] as number;
       if (targeted) row[fitnessCol] = score;
       const eligible = c0 >= (input.minBaselineCountToScore ?? 0);
@@ -408,8 +420,12 @@ function aggregateHaplotypes(
         row[varCol] = "";
         continue;
       }
-      const variance = targeted ? varLog2Ratio(cR, c0, PSEUDO) : varLog2WtRatio(cR, wtR, c0, wt0, PSEUDO);
-      const se = targeted ? seLog2Ratio(cR, c0, PSEUDO) : seLog2WtRatio(cR, wtR, c0, wt0, PSEUDO);
+      const variance = targeted
+        ? varLog2RpmRatio(cR, nR, c0, n0, input.pseudocount)
+        : varLog2RpmWtRatio(cR, wtR, nR, c0, wt0, n0, input.pseudocount);
+      const se = targeted
+        ? seLog2RpmRatio(cR, nR, c0, n0, input.pseudocount)
+        : seLog2RpmWtRatio(cR, wtR, nR, c0, wt0, n0, input.pseudocount);
       const safeSe = se > 1e-12 ? se : 1e-12;
       const z = score / safeSe;
       const p = twoSidedPvalue(z);
@@ -494,7 +510,7 @@ function buildPerSiteColumns(roundNames: ReadonlyArray<string>, includeEligibili
   // Phase 6.16: dropped Enrich_Global_<r> and NegLog10Pval_Fitness_<r>.
   // Centered_Fitness is the canonical fold-change column; raw Fitness_vs_WT
   // and Enrich_Global are recoverable as `Centered_Fitness + libraryMedian`
-  // and `log₂((RPM+1)/(RPM₀+1))` respectively. NegLog10Pval is one CSV
+  // and the configured RPM+p ratio respectively.
   // column away (`−log₁₀(Pval)`). Removing them frees room for Var_Fitness
   // without growing CSV width.
   for (const r of roundNames) cols.push({ name: `Fitness_vs_WT_${r}`, type: "float" });

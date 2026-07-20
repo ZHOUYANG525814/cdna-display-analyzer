@@ -32,6 +32,7 @@ export interface PipelineJob {
   driveToken?: string;
   rounds: RoundConfigInput[];
   settings: DemultiplexSettings;
+  pseudocount: number;
   useWasm: boolean;
   /** Pipeline mode. "multiplexed" preserves the historical demultiplex-by-
    *  barcode behaviour. "per-round" requires `sourceRoundIndices` and tells

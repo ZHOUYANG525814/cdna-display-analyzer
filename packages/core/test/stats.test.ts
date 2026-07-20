@@ -1,13 +1,59 @@
 import { describe, it, expect } from "vitest";
 import {
   benjaminiHochberg,
+  log2RpmRatio,
+  log2RpmWtRatio,
   median,
   negLog10P,
   normalCdf,
   seLog2Ratio,
+  seLog2RpmWtRatio,
   seLog2WtRatio,
+  varLog2RpmRatio,
   twoSidedPvalue,
 } from "../src/stats.js";
+
+describe("RPM+p enrichment score", () => {
+  it.each([0.5, 1])("uses pseudocount %s in RPM units", (pseudo) => {
+    const score = log2RpmRatio(10, 100, 2, 80, pseudo);
+    const expected =
+      Math.log2((100_000 + pseudo) / (25_000 + pseudo));
+    expect(score).toBeCloseTo(expected, 14);
+
+    const qDest = pseudo * 100 / 1e6;
+    const qSrc = pseudo * 80 / 1e6;
+    const variance = varLog2RpmRatio(10, 100, 2, 80, pseudo);
+    const expectedVariance = (1 / Math.LN2) ** 2 *
+      (1 / (10 + qDest) + 1 / (100 + qDest) + 1 / (2 + qSrc) + 1 / (80 + qSrc));
+    expect(variance).toBeCloseTo(expectedVariance, 14);
+  });
+
+  it("is invariant to library depth when RPM is unchanged", () => {
+    expect(log2RpmRatio(10, 100, 20, 200, 0.5)).toBe(0);
+  });
+
+  it("rejects missing, zero and non-finite pseudocounts", () => {
+    expect(() => log2RpmRatio(1, 10, 1, 10, undefined as unknown as number)).toThrow();
+    expect(() => log2RpmRatio(1, 10, 1, 10, 0)).toThrow();
+    expect(() => log2RpmRatio(1, 10, 1, 10, Number.NaN)).toThrow();
+  });
+
+  it("uses the same RPM pseudocount for legacy variant/reference ratios", () => {
+    const score = log2RpmWtRatio(10, 100, 1_000, 2, 80, 800, 0.5);
+    const expected = Math.log2(
+      ((10_000 + 0.5) / (100_000 + 0.5)) /
+      ((2_500 + 0.5) / (100_000 + 0.5)),
+    );
+    expect(score).toBeCloseTo(expected, 14);
+
+    const se = seLog2RpmWtRatio(10, 100, 1_000, 2, 80, 800, 0.5);
+    const q = 0.5 * 1_000 / 1e6;
+    const q0 = 0.5 * 800 / 1e6;
+    const expectedVariance = (1 / Math.LN2) ** 2 *
+      (1 / (10 + q) + 1 / (100 + q) + 1 / (2 + q0) + 1 / (80 + q0));
+    expect(se * se).toBeCloseTo(expectedVariance, 14);
+  });
+});
 
 describe("normalCdf", () => {
   it("Φ(0) == 0.5 within tight tolerance", () => {
@@ -67,8 +113,8 @@ describe("seLog2Ratio", () => {
     expect(se).toBeCloseTo(expected, 9);
   });
   it("monotonically decreases as counts grow", () => {
-    const lo = seLog2Ratio(5, 5);
-    const hi = seLog2Ratio(500, 500);
+    const lo = seLog2Ratio(5, 5, 0.5);
+    const hi = seLog2Ratio(500, 500, 0.5);
     expect(hi).toBeLessThan(lo);
   });
 });

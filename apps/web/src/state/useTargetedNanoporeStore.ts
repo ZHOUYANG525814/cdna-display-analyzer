@@ -11,6 +11,9 @@ export interface TargetedSourceFile {
   id: string;
   file: File | null;
   driveRef: DriveFileRef | null;
+  /** Filename recorded by an imported locked config. No path, ID, token or
+   * file content is retained. */
+  expectedFileName: string | null;
 }
 
 export interface TargetedRoundForm {
@@ -30,6 +33,7 @@ export interface TargetedSiteForm {
 export interface TargetedCallingSettings extends TargetedQcSettings {
   minTargetBaseQ: number;
   minInputCountToScore: number;
+  pseudocount: number;
 }
 
 export interface TargetedRunState {
@@ -38,6 +42,18 @@ export interface TargetedRunState {
   outcome: import("../worker/types").TargetedNanoporeOutcome | null;
   startedAt: number | null;
   finishedAt: number | null;
+}
+
+export interface TargetedLockedConfigImport {
+  projectName: string;
+  referenceSeq: string;
+  cdsStart: number;
+  cdsEnd: number;
+  cdsStrand: "+" | "-";
+  sites: Array<{ ntStart: number }>;
+  settings: TargetedCallingSettings;
+  reportHaplotypes: boolean;
+  rounds: Array<{ round: number; expectedFileNames: string[] }>;
 }
 
 interface TargetedNanoporeState {
@@ -71,8 +87,8 @@ interface TargetedNanoporeState {
   setReportHaplotypes: (value: boolean) => void;
   runState: TargetedRunState;
   setRunState: (patch: Partial<TargetedRunState>) => void;
-  /** Start another experiment with the same reference, CDS, sites and locked
-   * method defaults, while removing every prior FASTQ and result. */
+  loadLockedConfig: (config: TargetedLockedConfigImport) => void;
+  /** Return to a genuinely fresh initial wizard. */
   prepareNextRun: () => void;
 }
 
@@ -84,6 +100,7 @@ export const TARGETED_USER_DEFAULTS: TargetedCallingSettings = {
   maxProtectedIndelBases: 30,
   minTargetBaseQ: 15,
   minInputCountToScore: 10,
+  pseudocount: 0.5,
 };
 
 function uid(prefix: string): string {
@@ -92,6 +109,39 @@ function uid(prefix: string): string {
 
 function makeRound(round: number): TargetedRoundForm {
   return { id: uid("round"), round, files: [] };
+}
+
+function expectedSource(expectedFileName: string): TargetedSourceFile {
+  return { id: uid("expected"), file: null, driveRef: null, expectedFileName };
+}
+
+function attachSources(
+  existing: TargetedSourceFile[],
+  sources: Array<{ file: File | null; driveRef: DriveFileRef | null }>,
+): TargetedSourceFile[] {
+  const next = existing.map((source) => ({ ...source }));
+  const unmatched: Array<{ file: File | null; driveRef: DriveFileRef | null }> = [];
+  // Exact filename matches claim their intended slots first, independent of
+  // picker order. This prevents an unrelated shard from consuming a later
+  // exact match's slot.
+  for (const source of sources) {
+    const actualName = source.file?.name ?? source.driveRef?.name ?? "";
+    const index = next.findIndex((slot) =>
+      !slot.file && !slot.driveRef && slot.expectedFileName === actualName
+    );
+    if (index >= 0) {
+      next[index] = { ...next[index]!, ...source };
+    } else unmatched.push(source);
+  }
+  for (const source of unmatched) {
+    const index = next.findIndex((slot) => !slot.file && !slot.driveRef);
+    if (index >= 0) {
+      next[index] = { ...next[index]!, ...source };
+    } else {
+      next.push({ id: uid(source.file ? "local" : "drive"), ...source, expectedFileName: null });
+    }
+  }
+  return next.slice(0, NANOPORE_INPUT_LIMITS.maxFilesPerRound);
 }
 
 function renumber(rounds: TargetedRoundForm[]): TargetedRoundForm[] {
@@ -120,19 +170,27 @@ export const useTargetedNanoporeStore = create<TargetedNanoporeState>((set, get)
   addLocalFiles: (roundId, files) => set({
     rounds: get().rounds.map((r) => r.id === roundId ? {
       ...r,
-      files: [...r.files, ...files.map((file) => ({ id: uid("local"), file, driveRef: null }))].slice(0, NANOPORE_INPUT_LIMITS.maxFilesPerRound),
+      files: attachSources(r.files, files.map((file) => ({ file, driveRef: null }))),
     } : r),
     qcLocked: false,
   }),
   addDriveFiles: (roundId, files) => set({
     rounds: get().rounds.map((r) => r.id === roundId ? {
       ...r,
-      files: [...r.files, ...files.map((driveRef) => ({ id: `drive_${driveRef.id}`, file: null, driveRef }))].slice(0, NANOPORE_INPUT_LIMITS.maxFilesPerRound),
+      files: attachSources(r.files, files.map((driveRef) => ({ file: null, driveRef }))),
     } : r),
     qcLocked: false,
   }),
   removeSource: (roundId, sourceId) => set({
-    rounds: get().rounds.map((r) => r.id === roundId ? { ...r, files: r.files.filter((f) => f.id !== sourceId) } : r),
+    rounds: get().rounds.map((r) => r.id === roundId ? {
+      ...r,
+      files: r.files.flatMap((source) => {
+        if (source.id !== sourceId) return [source];
+        return source.expectedFileName
+          ? [{ ...source, file: null, driveRef: null }]
+          : [];
+      }),
+    } : r),
     qcLocked: false,
   }),
   referenceSeq: "",
@@ -163,11 +221,40 @@ export const useTargetedNanoporeStore = create<TargetedNanoporeState>((set, get)
   setReportHaplotypes: (reportHaplotypes) => set({ reportHaplotypes }),
   runState: { status: "idle", error: null, outcome: null, startedAt: null, finishedAt: null },
   setRunState: (patch) => set({ runState: { ...get().runState, ...patch } }),
+  loadLockedConfig: (config) => set({
+    currentStep: "inputs",
+    projectName: config.projectName,
+    rounds: config.rounds.map(({ round, expectedFileNames }) => ({
+      id: uid("round"),
+      round,
+      files: expectedFileNames.map(expectedSource),
+    })),
+    referenceSeq: config.referenceSeq,
+    cdsStart: config.cdsStart,
+    cdsEnd: config.cdsEnd,
+    cdsStrand: config.cdsStrand,
+    sites: config.sites.map(({ ntStart }, index) => ({
+      id: uid("site"),
+      name: `site_${String(index + 1).padStart(2, "0")}`,
+      ntStart,
+    })),
+    settings: { ...config.settings },
+    reportHaplotypes: config.reportHaplotypes,
+    qcLocked: false,
+    runState: { status: "idle", error: null, outcome: null, startedAt: null, finishedAt: null },
+  }),
   prepareNextRun: () => set({
     currentStep: "inputs",
     projectName: "",
     rounds: [makeRound(0), makeRound(1)],
+    referenceSeq: "",
+    cdsStart: 1,
+    cdsEnd: 0,
+    cdsStrand: "+",
+    sites: [],
+    settings: { ...TARGETED_USER_DEFAULTS },
     qcLocked: false,
+    reportHaplotypes: true,
     runState: { status: "idle", error: null, outcome: null, startedAt: null, finishedAt: null },
   }),
 }));

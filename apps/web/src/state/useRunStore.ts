@@ -79,6 +79,8 @@ interface RunState {
   minMeanPhred: number;
   /** Per-CDS-region mean Phred gate (B2 fix). Default 20. */
   minMeanPhredCds: number;
+  /** Enrichment pseudocount in RPM units. 0.5 is recommended; 1.0 reproduces RPM+1 scores. */
+  pseudocount: number;
 
   // Step 3 — preview
   /** Estimated read length, sampled from the first FASTQ during preview. */
@@ -118,6 +120,7 @@ interface RunState {
   setPipelineMode: (m: PipelineMode) => void;
   setMinMeanPhred: (v: number) => void;
   setMinMeanPhredCds: (v: number) => void;
+  setPseudocount: (v: number) => void;
 
   setPreview: (estReadLen: number, results: PreviewResult[]) => void;
   clearPreview: () => void;
@@ -163,6 +166,7 @@ export const useRunStore = create<RunState>((set, get) => ({
   useWasm: true,
   minMeanPhred: 20,
   minMeanPhredCds: 20,
+  pseudocount: 0.5,
   pipelineMode: "multiplexed",
 
   estimatedReadLength: 150,
@@ -208,6 +212,7 @@ export const useRunStore = create<RunState>((set, get) => ({
   setPipelineMode: (m) => set({ pipelineMode: m }),
   setMinMeanPhred: (v) => set({ minMeanPhred: v }),
   setMinMeanPhredCds: (v) => set({ minMeanPhredCds: v }),
+  setPseudocount: (v) => set({ pseudocount: v }),
 
   setPreview: (estReadLen, results) =>
     set({ estimatedReadLength: estReadLen, previewResults: results }),
@@ -239,11 +244,19 @@ export const useRunStore = create<RunState>((set, get) => ({
   resetAll: () =>
     set({
       currentStep: "sources",
+      projectName: "",
       localFiles: [],
       driveFiles: [],
       referenceSeq: "",
       rounds: [defaultRound(0), defaultRound(1)],
+      adaptive: true,
+      filterStop: true,
+      useWasm: true,
+      minMeanPhred: 20,
+      minMeanPhredCds: 20,
+      pseudocount: 0.5,
       pipelineMode: "multiplexed",
+      estimatedReadLength: 150,
       previewResults: [],
       status: "idle",
       progress: null,

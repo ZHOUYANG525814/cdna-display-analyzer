@@ -2,7 +2,7 @@
 
 > Browser-native NGS pipeline for cDNA-display / mRNA-display selection rounds.
 > Streams FASTQ from Google Drive, demultiplexes by primer barcode, extracts CDS
-> slices, computes peptide enrichment — **all in the user's browser. No upload,
+> slices, computes RPM-normalized peptide enrichment with Enrich2-style variance — **all in the user's browser. No upload,
 > no install, no server.**
 
 <!-- TODO: add screenshot or GIF here once deployed -->
@@ -29,7 +29,7 @@ final CSV — written via a `Blob` download, never uploaded anywhere.
 Single-end FASTQ → demultiplex by forward-primer barcode → extract CDS at
 offsets relative to the Fw anchor → filter by mean Phred / frameshift / stop
 codon → aggregate to a peptide enrichment matrix (RPM, stepwise & global
-log2-fold enrichment).
+log2((RPM+p)/(RPM0+p)) enrichment, Enrich2-style variance and FDR).
 
 ## Architecture
 
@@ -82,8 +82,8 @@ The split is deliberate:
 
 ## Correctness — byte-for-byte parity with a Python reference
 
-The project's hard requirement was that the browser output match the existing
-desktop Python pipeline **byte-for-byte**, not "close enough." The
+The project's hard requirement is that the browser output match the maintained
+desktop Python reference **byte-for-byte** for both supported pseudocounts. The
 [`test/parity.test.ts`](./packages/core/test/parity.test.ts) suite runs the
 TypeScript pipeline (both pure-TS and WASM scoring paths) on a 1,000-read
 synthetic fixture and asserts:
@@ -93,14 +93,13 @@ synthetic fixture and asserts:
 - `Master_Enrichment_Matrix.csv` matches bit-for-bit (pandas defaults: integer
   floats with `.0` suffix, `True`/`False` not `1`/`0`, `NaN` as empty, stable
   sort with `Peptide_Seq` tiebreaker)
-- Numeric: `Math.log2((a+1)/(b+1))` matches `np.log2((a+1)/(b+1))` to ULP
+- Numeric: the RPM+p ratio and unit-consistent four-term variance match for
+  both `p=0.5 RPM` and `p=1.0 RPM`
 
 ```bash
 $ pnpm --filter @cdna/core test parity
-✓ Phase 1+2 parity (TS path)   — run_stats.json byte-for-byte match
-✓ Phase 1+2 parity (TS path)   — Master_Enrichment_Matrix.csv byte-for-byte match
-✓ Phase 1+2 parity (WASM path) — run_stats.json byte-for-byte match
-✓ Phase 1+2 parity (WASM path) — Master_Enrichment_Matrix.csv byte-for-byte match
+✓ p=0.5: TS and WASM paths match the Python CSV/JSON golden
+✓ p=1.0: TS and WASM paths match the Python CSV/JSON golden
 ```
 
 The fixture itself is synthetic — see

@@ -159,7 +159,7 @@ export async function runNanoporePipeline(
       ` · minMeanPhredRead=${settings.minMeanPhredRead}` +
       ` · minMeanPhredRoi=${settings.minMeanPhredRoi}` +
       ` · filterStop=${settings.filterStop}` +
-      ` · pseudocount=1.0 · FDR=BH`,
+      ` · pseudocount=${settings.pseudocount} RPM · FDR=BH`,
   );
   for (const s of resolvedSites) {
     log(
@@ -345,6 +345,7 @@ export async function runNanoporePipeline(
     stats: engine.stats,
     sites: resolvedSites.map((s) => ({ name: s.name, wtDna: s.wtDna })),
     emitHaplotype: settings.reportHaplotype,
+    pseudocount: settings.pseudocount,
   });
   const dtAnalyzer = ((performance.now() - tAnalyzer0) / 1000).toFixed(1);
 

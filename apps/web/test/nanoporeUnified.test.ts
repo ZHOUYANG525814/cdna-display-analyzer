@@ -69,7 +69,7 @@ describe("built-in Nanopore demo", () => {
       sources, sourceRoundIndices, roundNames: rounds.map((r) => `Round ${r.round}`),
       reference: NANOPORE_DEMO_REFERENCE,
       sites: NANOPORE_DEMO_SITES.map((site) => ({ name: aminoAcidTargetLabel(NANOPORE_DEMO_REFERENCE, 1, site.ntStart).name, ntStart: site.ntStart, length: 3, design: "NNK" as const })),
-      settings: { minReadQ: 10, minReferenceCoverage: 0.9, minAlignmentIdentity: 0.85, minProtectedIdentity: 0.95, maxProtectedIndelBases: 30, minTargetBaseQ: 15, minInputCountToScore: 5, reportHaplotypes: true },
+      settings: { minReadQ: 10, minReferenceCoverage: 0.9, minAlignmentIdentity: 0.85, minProtectedIdentity: 0.95, maxProtectedIndelBases: 30, minTargetBaseQ: 15, minInputCountToScore: 5, pseudocount: 0.5, reportHaplotypes: true },
     });
     expect(result.stats.get("Round 0")!.primary_drop_reasons.low_read_q).toBe(1);
     expect(result.stats.get("Round 2")!.primary_drop_reasons.concatemer_or_chimera).toBe(1);

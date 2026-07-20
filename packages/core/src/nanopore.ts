@@ -61,6 +61,8 @@ export interface NanoporeSettings {
   filterStop: boolean;
   /** Emit linked haplotype counter when ≥2 sites all extract from same read. */
   reportHaplotype: boolean;
+  /** Downstream enrichment pseudocount in RPM units; does not affect read calling. */
+  pseudocount: number;
   /** Multiplexed-mode barcode score budget (banded-align scale). */
   maxBarcodeError: number;
   /** Multiplexed-mode runner-up margin. */
@@ -77,6 +79,7 @@ export const DEFAULT_SETTINGS: NanoporeSettings = Object.freeze({
   minMeanPhredRoi: 15,
   filterStop: true,
   reportHaplotype: true,
+  pseudocount: 0.5,
   maxBarcodeError: 2,
   minBarcodeVictoryMargin: 1,
   barcodeSearchWindow: 100,

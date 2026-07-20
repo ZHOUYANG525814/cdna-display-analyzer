@@ -31,22 +31,22 @@ describe("targeted Nanopore web contract", () => {
       sites: [{ id: "s", name: "site_01", ntStart: 1 }],
     };
     const distinct = targetedInputErrors({ ...base, rounds: [
-      { id: "r0", round: 0, files: [{ id: "a", file: a, driveRef: null }] },
-      { id: "r1", round: 1, files: [{ id: "b", file: b, driveRef: null }] },
+      { id: "r0", round: 0, files: [{ id: "a", file: a, driveRef: null, expectedFileName: null }] },
+      { id: "r1", round: 1, files: [{ id: "b", file: b, driveRef: null, expectedFileName: null }] },
     ] });
     expect(distinct).not.toContain("The same FASTQ source cannot be assigned twice.");
     const duplicate = targetedInputErrors({ ...base, rounds: [
-      { id: "r0", round: 0, files: [{ id: "a", file: a, driveRef: null }] },
-      { id: "r1", round: 1, files: [{ id: "b", file: a, driveRef: null }] },
+      { id: "r0", round: 0, files: [{ id: "a", file: a, driveRef: null, expectedFileName: null }] },
+      { id: "r1", round: 1, files: [{ id: "b", file: a, driveRef: null, expectedFileName: null }] },
     ] });
     expect(duplicate).toContain("The same FASTQ source cannot be assigned twice.");
   });
 
-  it("prepares a next run without losing the confirmed biological design", () => {
+  it("starts a new run from the true initial state", () => {
     useTargetedNanoporeStore.setState({
       projectName: "finished", referenceSeq: "ACG".repeat(20), cdsStart: 1, cdsEnd: 60,
       sites: [{ id: "s", name: "site_01", ntStart: 1 }],
-      rounds: [{ id: "r", round: 0, files: [{ id: "f", file: new File(["x"], "x.fastq"), driveRef: null }] }],
+      rounds: [{ id: "r", round: 0, files: [{ id: "f", file: new File(["x"], "x.fastq"), driveRef: null, expectedFileName: null }] }],
       currentStep: "results", qcLocked: true,
     });
     useTargetedNanoporeStore.getState().prepareNextRun();
@@ -54,8 +54,54 @@ describe("targeted Nanopore web contract", () => {
     expect(state.currentStep).toBe("inputs");
     expect(state.projectName).toBe("");
     expect(state.rounds.map((r) => [r.round, r.files.length])).toEqual([[0, 0], [1, 0]]);
-    expect(state.referenceSeq).toBe("ACG".repeat(20));
-    expect(state.sites[0]!.ntStart).toBe(1);
+    expect(state.referenceSeq).toBe("");
+    expect(state.cdsStart).toBe(1);
+    expect(state.cdsEnd).toBe(0);
+    expect(state.sites).toEqual([]);
+    expect(state.settings).toEqual({
+      minReadQ: 10,
+      minReferenceCoverage: 0.9,
+      minAlignmentIdentity: 0.85,
+      minProtectedIdentity: 0.95,
+      maxProtectedIndelBases: 30,
+      minTargetBaseQ: 15,
+      minInputCountToScore: 10,
+      pseudocount: 0.5,
+    });
     expect(state.qcLocked).toBe(false);
+  });
+
+  it("loads locked filename hints and accepts a non-matching replacement without blocking", () => {
+    useTargetedNanoporeStore.getState().loadLockedConfig({
+      projectName: "locked",
+      referenceSeq: "ACG".repeat(20),
+      cdsStart: 1,
+      cdsEnd: 60,
+      cdsStrand: "+",
+      sites: [{ ntStart: 1 }],
+      settings: {
+        minReadQ: 10,
+        minReferenceCoverage: 0.9,
+        minAlignmentIdentity: 0.85,
+        minProtectedIdentity: 0.95,
+        maxProtectedIndelBases: 30,
+        minTargetBaseQ: 15,
+        minInputCountToScore: 10,
+        pseudocount: 0.5,
+      },
+      reportHaplotypes: false,
+      rounds: [
+        { round: 0, expectedFileNames: ["expected-r0.fastq"] },
+        { round: 1, expectedFileNames: ["expected-r1.fastq"] },
+      ],
+    });
+    let state = useTargetedNanoporeStore.getState();
+    expect(state.rounds[0]!.files[0]!.expectedFileName).toBe("expected-r0.fastq");
+    expect(state.rounds[0]!.files[0]!.file).toBeNull();
+
+    state.addLocalFiles(state.rounds[0]!.id, [new File(["x"], "renamed.fastq")]);
+    state = useTargetedNanoporeStore.getState();
+    expect(state.rounds[0]!.files[0]!.file?.name).toBe("renamed.fastq");
+    expect(state.rounds[0]!.files[0]!.expectedFileName).toBe("expected-r0.fastq");
   });
 });

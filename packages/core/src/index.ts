@@ -49,6 +49,24 @@ export {
 } from "./analyzer.js";
 
 export {
+  DEFAULT_ENRICHMENT_PSEUDOCOUNT,
+  LEGACY_ENRICHMENT_PSEUDOCOUNT,
+  assertValidPseudocount,
+  READS_PER_MILLION,
+  rpmPseudocountAsCount,
+  log2RpmRatio,
+  seLog2Ratio,
+  varLog2Ratio,
+  seLog2RpmRatio,
+  varLog2RpmRatio,
+  log2RpmWtRatio,
+  seLog2RpmWtRatio,
+  varLog2RpmWtRatio,
+  seLog2WtRatio,
+  varLog2WtRatio,
+} from "./stats.js";
+
+export {
   runPipeline,
   buildRunStatsJson,
   type PipelineRequest,

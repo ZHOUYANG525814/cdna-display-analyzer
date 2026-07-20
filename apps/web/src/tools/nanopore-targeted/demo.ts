@@ -50,7 +50,7 @@ export function buildNanoporeDemoRounds(): TargetedRoundForm[] {
       files: shards.map((part, shard) => {
         const ext = round === 0 ? "fastqsanger" : shard === 0 ? "fastq" : "fq";
         const file = new File([part.join("")], `nanopore_demo_round${round}_part${shard + 1}.${ext}`, { type: "text/plain" });
-        return { id: `demo_file_${round}_${shard}`, file, driveRef: null };
+        return { id: `demo_file_${round}_${shard}`, file, driveRef: null, expectedFileName: null };
       }),
     };
   });

@@ -60,6 +60,7 @@ function buildPanel(
   label: string,
   totalsByRound: Record<string, number>,
   firstRound: string,
+  pseudocount: number,
 ): Panel {
   // Fast path (Phase 6.15): when src is the first round, the analyzer has
   // already written Pval_Enrich_<dest>_vs_<first> + FDR_q_<dest>_vs_<first>
@@ -69,10 +70,10 @@ function buildPanel(
   //
   // Phase 6.16: X-axis switched from raw `Enrich_Global` (column removed)
   // to `Centered_Enrich`. Z (and therefore the p-value) is computed off the
-  // raw fold-change, but centering only shifts the mean — the SE is
-  // unchanged — so the volcano's "significant" region (FDR cutoff line) is
-  // identical to before. The X-axis interpretation changes: "shift from the
-  // library median" instead of "raw log₂ fold-change".
+  // raw fold-change, while X displays the centered score. We deliberately
+  // reuse the analyzer's raw-score FDR rather than recomputing inference from
+  // the centered numerator. The X-axis interpretation is "shift from the
+  // library median".
   const usePrecomputed =
     src === firstRound &&
     rows.length > 0 &&
@@ -96,6 +97,7 @@ function buildPanel(
       dest,
       totalsByRound[src] ?? 0,
       totalsByRound[dest] ?? 0,
+      pseudocount,
     );
     stats = tests.map((t) => ({ peptide: t.peptide, log2FC: t.log2FC, fdr: t.fdr }));
   }
@@ -168,16 +170,17 @@ interface Props {
    *  comes from here, NOT from summing the (possibly capped) rows. */
   totalsByRound: Record<string, number>;
   roundNames: ReadonlyArray<string>;
+  pseudocount: number;
 }
 
-export function VolcanoPlot({ rows, totalsByRound, roundNames }: Props) {
+export function VolcanoPlot({ rows, totalsByRound, roundNames, pseudocount }: Props) {
   const panels = useMemo<Panel[]>(() => {
     if (rows.length === 0 || roundNames.length < 2) return [];
     const firstRound = roundNames[0]!;
     const out: Panel[] = [];
     for (let i = 1; i < roundNames.length; i++) {
       out.push(
-        buildPanel(rows, roundNames[i - 1]!, roundNames[i]!, "Stepwise", totalsByRound, firstRound),
+        buildPanel(rows, roundNames[i - 1]!, roundNames[i]!, "Stepwise", totalsByRound, firstRound, pseudocount),
       );
     }
     if (roundNames.length >= 3) {
@@ -189,11 +192,12 @@ export function VolcanoPlot({ rows, totalsByRound, roundNames }: Props) {
           "Global",
           totalsByRound,
           firstRound,
+          pseudocount,
         ),
       );
     }
     return out;
-  }, [rows, totalsByRound, roundNames]);
+  }, [rows, totalsByRound, roundNames, pseudocount]);
 
   if (panels.length === 0) {
     return (

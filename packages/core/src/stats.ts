@@ -5,12 +5,14 @@
 // Design choices, kept explicit because each one is a method-choice that
 // changes results:
 //
-//   • Pseudocount = 1.0 throughout. Same value the existing log2 columns
-//     already use, so SE and the score stay internally consistent.
+//   • Pseudocount is supplied explicitly by the caller in RPM units. The
+//     product default is 0.5 RPM; 1.0 RPM remains selectable for historical
+//     comparison. No helper has a silent default.
 //
-//   • Variance via Poisson delta-method on raw counts. For a log-ratio
-//     L = log((c1 + p) / (c2 + p)), Var(L) ≈ 1/(c1+p) + 1/(c2+p) (in nats).
-//     Multiply by (1/ln 2)² to get variance in log2 units.
+//   • Variance uses the Enrich2 Poisson delta method on raw counts. An RPM
+//     pseudocount p is converted separately for each library to the
+//     count-scale value q = p × N / 1e6. This keeps score and variance in the
+//     same units while preserving log2((RPM_dest+p)/(RPM_src+p)).
 //
 //   • Z = score / SE, p = 2·(1 − Φ(|Z|)), two-sided. Wald-type, anti-
 //     conservative at very low counts; pseudocount mitigates but doesn't
@@ -28,6 +30,39 @@
 
 /** Natural-log → log2 conversion factor. Var(log2 X) = (1/ln 2)² · Var(ln X). */
 export const INV_LN2 = 1 / Math.LN2;
+export const READS_PER_MILLION = 1_000_000;
+export const DEFAULT_ENRICHMENT_PSEUDOCOUNT = 0.5;
+export const LEGACY_ENRICHMENT_PSEUDOCOUNT = 1.0;
+
+/** Reject invalid user/config values at the analysis boundary. */
+export function assertValidPseudocount(pseudo: number): void {
+  if (!Number.isFinite(pseudo) || pseudo <= 0) {
+    throw new Error("Enrichment pseudocount must be a finite number greater than 0.");
+  }
+}
+
+/** Convert an RPM pseudocount to its count-scale value for one library. */
+export function rpmPseudocountAsCount(total: number, pseudoRpm: number): number {
+  assertValidPseudocount(pseudoRpm);
+  return (pseudoRpm * total) / READS_PER_MILLION;
+}
+
+/** RPM-normalized log2 ratio between destination and source.
+ *
+ *  L = log2[(RPM_dest+p)/(RPM_src+p)]
+ */
+export function log2RpmRatio(
+  cDest: number,
+  nDest: number,
+  cSrc: number,
+  nSrc: number,
+  pseudoRpm: number,
+): number {
+  assertValidPseudocount(pseudoRpm);
+  const rpmDest = nDest > 0 ? (cDest / nDest) * READS_PER_MILLION : 0;
+  const rpmSrc = nSrc > 0 ? (cSrc / nSrc) * READS_PER_MILLION : 0;
+  return Math.log2((rpmDest + pseudoRpm) / (rpmSrc + pseudoRpm));
+}
 
 /** Cumulative distribution function of the standard normal, computed via the
  *  Abramowitz & Stegun rational approximation to erf (#26.2.17). Max error
@@ -77,7 +112,8 @@ export function negLog10P(p: number): number {
 /** Standard error of `log2((c1 + p) / (c2 + p))` under Poisson c1, c2.
  *  Pseudocount must match the pseudocount used in the score formula for
  *  Z = score / SE to be self-consistent. */
-export function seLog2Ratio(c1: number, c2: number, pseudo = 1.0): number {
+export function seLog2Ratio(c1: number, c2: number, pseudo: number): number {
+  assertValidPseudocount(pseudo);
   return INV_LN2 * Math.sqrt(1 / (c1 + pseudo) + 1 / (c2 + pseudo));
 }
 
@@ -85,8 +121,99 @@ export function seLog2Ratio(c1: number, c2: number, pseudo = 1.0): number {
  *  because we emit it as a CSV column for ML inverse-variance weighting —
  *  `weight = 1 / σ²`. Mathematically identical to `seLog2Ratio² ` but skips a
  *  redundant `Math.sqrt` per row. */
-export function varLog2Ratio(c1: number, c2: number, pseudo = 1.0): number {
+export function varLog2Ratio(c1: number, c2: number, pseudo: number): number {
+  assertValidPseudocount(pseudo);
   return INV_LN2 * INV_LN2 * (1 / (c1 + pseudo) + 1 / (c2 + pseudo));
+}
+
+/** Standard error of log2RpmRatio. The RPM pseudocount is converted to a
+ *  library-specific count pseudocount before applying Enrich2's four-term
+ *  Poisson delta-method variance. */
+export function seLog2RpmRatio(
+  cDest: number,
+  nDest: number,
+  cSrc: number,
+  nSrc: number,
+  pseudoRpm: number,
+): number {
+  return Math.sqrt(varLog2RpmRatio(cDest, nDest, cSrc, nSrc, pseudoRpm));
+}
+
+/** Variance of log2RpmRatio in log2 units. */
+export function varLog2RpmRatio(
+  cDest: number,
+  nDest: number,
+  cSrc: number,
+  nSrc: number,
+  pseudoRpm: number,
+): number {
+  const qDest = rpmPseudocountAsCount(nDest, pseudoRpm);
+  const qSrc = rpmPseudocountAsCount(nSrc, pseudoRpm);
+  return (
+    INV_LN2 *
+    INV_LN2 *
+    (
+      1 / (cDest + qDest) +
+      1 / (nDest + qDest) +
+      1 / (cSrc + qSrc) +
+      1 / (nSrc + qSrc)
+    )
+  );
+}
+
+/** RPM-normalized variant-vs-reference ratio for the legacy Nanopore view.
+ *  Each round uses its own count-scale equivalent of the same RPM
+ *  pseudocount, so library depth does not change the smoothing unit. */
+export function log2RpmWtRatio(
+  cV: number,
+  wt: number,
+  total: number,
+  cV0: number,
+  wt0: number,
+  total0: number,
+  pseudoRpm: number,
+): number {
+  assertValidPseudocount(pseudoRpm);
+  const rpmV = total > 0 ? (cV / total) * READS_PER_MILLION : 0;
+  const rpmWt = total > 0 ? (wt / total) * READS_PER_MILLION : 0;
+  const rpmV0 = total0 > 0 ? (cV0 / total0) * READS_PER_MILLION : 0;
+  const rpmWt0 = total0 > 0 ? (wt0 / total0) * READS_PER_MILLION : 0;
+  return Math.log2(
+    ((rpmV + pseudoRpm) / (rpmWt + pseudoRpm)) /
+    ((rpmV0 + pseudoRpm) / (rpmWt0 + pseudoRpm)),
+  );
+}
+
+/** Standard error of log2RpmWtRatio. */
+export function seLog2RpmWtRatio(
+  cV: number,
+  wt: number,
+  total: number,
+  cV0: number,
+  wt0: number,
+  total0: number,
+  pseudoRpm: number,
+): number {
+  return Math.sqrt(varLog2RpmWtRatio(cV, wt, total, cV0, wt0, total0, pseudoRpm));
+}
+
+/** Four-count Enrich2 variance for log2RpmWtRatio in log2 units. */
+export function varLog2RpmWtRatio(
+  cV: number,
+  wt: number,
+  total: number,
+  cV0: number,
+  wt0: number,
+  total0: number,
+  pseudoRpm: number,
+): number {
+  const q = rpmPseudocountAsCount(total, pseudoRpm);
+  const q0 = rpmPseudocountAsCount(total0, pseudoRpm);
+  return (
+    INV_LN2 *
+    INV_LN2 *
+    (1 / (cV + q) + 1 / (wt + q) + 1 / (cV0 + q0) + 1 / (wt0 + q0))
+  );
 }
 
 /** Standard error of a four-term log2 ratio (Enrich2's L_v with explicit WT):
@@ -97,8 +224,9 @@ export function seLog2WtRatio(
   wt: number,
   cV0: number,
   wt0: number,
-  pseudo = 1.0,
+  pseudo: number,
 ): number {
+  assertValidPseudocount(pseudo);
   return (
     INV_LN2 *
     Math.sqrt(
@@ -116,8 +244,9 @@ export function varLog2WtRatio(
   wt: number,
   cV0: number,
   wt0: number,
-  pseudo = 1.0,
+  pseudo: number,
 ): number {
+  assertValidPseudocount(pseudo);
   return (
     INV_LN2 *
     INV_LN2 *

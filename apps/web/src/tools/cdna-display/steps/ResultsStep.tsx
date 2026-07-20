@@ -148,12 +148,14 @@ export function ResultsStep() {
           collapsed so the dashboard's main viz stays above the fold. */}
       <MethodsCard
         doc={CDNA_METHODS}
+        pseudocount={state.pseudocount}
         settings={[
           { label: "Pipeline mode", value: state.pipelineMode },
           { label: "WASM scoring", value: state.useWasm ? "on" : "off" },
           { label: "Min mean read Phred", value: `≥ ${state.minMeanPhred.toFixed(1)}` },
           { label: "Min mean CDS Phred", value: `≥ ${state.minMeanPhredCds.toFixed(1)}` },
           { label: "Discard premature stops", value: state.filterStop ? "yes" : "no" },
+          { label: "Enrichment pseudocount (RPM)", value: state.pseudocount.toString() },
         ]}
         libraryMedian={outcome.libraryMedianEnrich}
         hitCounts={outcome.hitCounts}
@@ -337,6 +339,7 @@ export function ResultsStep() {
                 rows={parsedMatrix.rows}
                 totalsByRound={perRoundCounts.totalsByRound}
                 roundNames={parsedMatrix.roundNames}
+                pseudocount={state.pseudocount}
               />
             </LazyMount>
           </CardContent>

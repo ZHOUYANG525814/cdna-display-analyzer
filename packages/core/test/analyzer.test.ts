@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { runAnalyzer, type AnalyzerInput, serializeCsv } from "../src/analyzer.js";
+import { runAnalyzer as runAnalyzerCore, type AnalyzerInput, serializeCsv } from "../src/analyzer.js";
 import type { RoundStats } from "../src/demultiplex.js";
 
 function mkStats(passedQc: number): RoundStats {
@@ -10,6 +10,12 @@ function mkStats(passedQc: number): RoundStats {
     discard_stop_codon: 0,
     passed_qc: passedQc,
   };
+}
+
+/** Tests spell out the product default once; production AnalyzerInput keeps
+ * pseudocount required so omitted wiring remains a compile error. */
+function runAnalyzer(input: Omit<AnalyzerInput, "pseudocount"> & { pseudocount?: number }) {
+  return runAnalyzerCore({ ...input, pseudocount: input.pseudocount ?? 0.5 });
 }
 
 describe("runAnalyzer", () => {
@@ -83,7 +89,7 @@ describe("runAnalyzer", () => {
     expect(byPeptide.get("MG")!.Count_R0).toBe(5);
   });
 
-  it("computes stepwise + global log2 enrichment with pseudocount 1.0", () => {
+  it("computes RPM+p stepwise + global enrichment with pseudocount 1.0 RPM", () => {
     // Peptide M: R0 count 1, R1 count 100, R2 count 0.
     // passed_qc: R0=1000, R1=1000, R2=1000 → RPMs 1000, 100000, 0.
     // Step R1 vs R0: log2((100000+1)/(1000+1)) ≈ log2(99.9) ≈ 6.643
@@ -102,6 +108,7 @@ describe("runAnalyzer", () => {
         ["R1", mkStats(1000)],
         ["R2", mkStats(1000)],
       ]),
+      pseudocount: 1,
     })!;
     const r = out.rows[0]!;
     expect(r.RPM_R0).toBe(1000);
@@ -110,17 +117,19 @@ describe("runAnalyzer", () => {
     // Exact float-64 values; we want byte-identical match with Python so just
     // assert the math matches Math.log2 directly (no tolerance — they should
     // be ULP-identical to np.log2).
-    expect(r["Enrich_Step_R1_vs_R0"]).toBe(Math.log2((100000 + 1) / (1000 + 1)));
-    expect(r["Enrich_Step_R2_vs_R1"]).toBe(Math.log2((0 + 1) / (100000 + 1)));
+    expect(r["Enrich_Step_R1_vs_R0"]).toBeCloseTo(Math.log2((100000 + 1) / (1000 + 1)), 14);
+    expect(r["Enrich_Step_R2_vs_R1"]).toBeCloseTo(Math.log2((0 + 1) / (100000 + 1)), 14);
     // Phase 6.16: Enrich_Global_* removed. The raw log₂ fold-change is the
     // sum of `Centered_Enrich + libraryMedian`; verify that identity instead.
     const med1 = out.libraryMedianEnrich["Enrich_Global_R1_vs_R0"]!;
     const med2 = out.libraryMedianEnrich["Enrich_Global_R2_vs_R0"]!;
-    expect((r["Centered_Enrich_R1_vs_R0"] as number) + med1).toBe(
+    expect((r["Centered_Enrich_R1_vs_R0"] as number) + med1).toBeCloseTo(
       Math.log2((100000 + 1) / (1000 + 1)),
+      14,
     );
-    expect((r["Centered_Enrich_R2_vs_R0"] as number) + med2).toBe(
+    expect((r["Centered_Enrich_R2_vs_R0"] as number) + med2).toBeCloseTo(
       Math.log2((0 + 1) / (1000 + 1)),
+      14,
     );
   });
 
@@ -259,9 +268,11 @@ describe("runAnalyzer — Phase 6.12 + 6.16 column set", () => {
     expect(Math.abs(enricher!["Z_Enrich_R1_vs_R0"] as number)).toBeGreaterThan(
       Math.abs(neutral!["Z_Enrich_R1_vs_R0"] as number),
     );
-    // Var_Enrich should be positive and follow the σ² = (1/ln 2)² × (1/(c1+1) + 1/(c2+1)) formula.
-    // For the neutral row (Count_R0 = Count_R1 = 100): σ² = (1/ln2)² × 2/101 ≈ 0.0412.
-    const expectedVar = (1 / Math.LN2) ** 2 * (1 / 101 + 1 / 101);
+    // Enrich2 variance includes both variant counts and library totals after
+    // converting 0.5 RPM to its count-scale equivalent for this library.
+    const q = 0.5 * 10_000 / 1e6;
+    const expectedVar = (1 / Math.LN2) ** 2 *
+      (1 / (100 + q) + 1 / (10_000 + q) + 1 / (100 + q) + 1 / (10_000 + q));
     expect(neutral!["Var_Enrich_R1_vs_R0"] as number).toBeCloseTo(expectedVar, 10);
     // Library median diagnostic key is kept as "Enrich_Global_*" (describes
     // the underlying log₂ fold-change quantity even though we no longer emit

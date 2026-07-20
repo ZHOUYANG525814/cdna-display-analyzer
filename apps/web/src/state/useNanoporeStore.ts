@@ -120,6 +120,8 @@ interface NanoporeState {
   setMinMeanPhredRead: (v: number) => void;
   minMeanPhredRoi: number;
   setMinMeanPhredRoi: (v: number) => void;
+  pseudocount: number;
+  setPseudocount: (v: number) => void;
 
   // Run state — populated when the engine actually runs.
   status: NanoporeRunStatus;
@@ -139,6 +141,7 @@ interface NanoporeState {
   errorMessage: string | null;
   setErrorMessage: (m: string | null) => void;
   resetRun: () => void;
+  resetAll: () => void;
 }
 
 export const useNanoporeStore = create<NanoporeState>((set, get) => ({
@@ -192,6 +195,8 @@ export const useNanoporeStore = create<NanoporeState>((set, get) => ({
   setMinMeanPhredRead: (v) => set({ minMeanPhredRead: v }),
   minMeanPhredRoi: 15,
   setMinMeanPhredRoi: (v) => set({ minMeanPhredRoi: v }),
+  pseudocount: 0.5,
+  setPseudocount: (v) => set({ pseudocount: v }),
 
   status: "idle",
   setStatus: (s) => set({ status: s }),
@@ -212,6 +217,29 @@ export const useNanoporeStore = create<NanoporeState>((set, get) => ({
   setErrorMessage: (m) => set({ errorMessage: m }),
   resetRun: () =>
     set({
+      status: "idle",
+      progress: null,
+      perSourceBytes: {},
+      startedAt: null,
+      finishedAt: null,
+      log: [],
+      outcome: null,
+      errorMessage: null,
+    }),
+  resetAll: () =>
+    set({
+      currentStep: "sources",
+      projectName: "",
+      pipelineMode: "per-round",
+      localFiles: [],
+      driveFiles: [],
+      referenceSeq: "",
+      sites: [makeSite(0)],
+      rounds: [makeRound(0), makeRound(1)],
+      reportHaplotype: true,
+      minMeanPhredRead: 10,
+      minMeanPhredRoi: 15,
+      pseudocount: 0.5,
       status: "idle",
       progress: null,
       perSourceBytes: {},

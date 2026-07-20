@@ -71,6 +71,7 @@ async function runOnce(useWasm: boolean): Promise<{ ms: number; passed: number }
     sources: [fileSource(FASTQ)],
     rounds,
     settings,
+    pseudocount: 0.5,
     useWasm,
   });
   const ms = performance.now() - t0;

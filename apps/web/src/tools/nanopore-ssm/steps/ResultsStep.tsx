@@ -18,7 +18,7 @@ export function ResultsStep() {
   const projectName = useNanoporeStore((s) => s.projectName);
   const goPrev = useNanoporeStore((s) => s.goPrev);
   const setStep = useNanoporeStore((s) => s.setStep);
-  const resetRun = useNanoporeStore((s) => s.resetRun);
+  const resetAll = useNanoporeStore((s) => s.resetAll);
 
   if (!outcome) {
     return (
@@ -41,7 +41,7 @@ export function ResultsStep() {
     );
   }
 
-  return <ResultsLoaded outcome={outcome} projectName={projectName} onPrev={goPrev} onReset={() => { resetRun(); setStep("sources"); }} />;
+  return <ResultsLoaded outcome={outcome} projectName={projectName} onPrev={goPrev} onReset={resetAll} />;
 }
 
 /** Pull the active Nanopore settings into the shape MethodsCard expects.
@@ -51,10 +51,12 @@ function useMethodsSettings(): ReadonlyArray<{ label: string; value: string }> {
   const reportHaplotype = useNanoporeStore((s) => s.reportHaplotype);
   const minMeanPhredRead = useNanoporeStore((s) => s.minMeanPhredRead);
   const minMeanPhredRoi = useNanoporeStore((s) => s.minMeanPhredRoi);
+  const pseudocount = useNanoporeStore((s) => s.pseudocount);
   return [
     { label: "Pipeline mode", value: pipelineMode },
     { label: "Min mean read Phred", value: `≥ ${minMeanPhredRead}` },
     { label: "Min mean ROI Phred", value: `≥ ${minMeanPhredRoi}` },
+    { label: "Enrichment pseudocount (RPM)", value: pseudocount.toString() },
     { label: "Report linked haplotype", value: reportHaplotype ? "yes" : "no" },
   ];
 }
@@ -73,6 +75,7 @@ function ResultsLoaded({
   // Settings recap rows for the MethodsCard. Reads the active Nanopore-store
   // values so the card reflects exactly the parameters the engine ran with.
   const settings = useMethodsSettings();
+  const pseudocount = useNanoporeStore((s) => s.pseudocount);
 
   // Aggregate totals across rounds for the stat-card row.
   const totals = useMemo(() => {
@@ -229,6 +232,7 @@ function ResultsLoaded({
           content that gets appended to the downloaded QC report. */}
       <MethodsCard
         doc={NANOPORE_METHODS}
+        pseudocount={pseudocount}
         settings={settings}
         libraryMedian={outcome.libraryMedianFitness}
         hitCounts={outcome.hitCounts}

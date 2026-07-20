@@ -67,13 +67,14 @@ function loadRoundsFromYaml(text: string): { rounds: RoundConfigInput[]; setting
 
 // Helper: produce a TS-mode and a WASM-mode parity check from one fixture.
 // The TS path is the reference; the WASM path must reproduce the same bytes.
-async function runFixture(useWasm: boolean) {
+async function runFixture(useWasm: boolean, pseudocount: number) {
   const cfgText = await readFile(path.join(FIX, "primers.yaml"), "utf8");
   const { rounds, settings } = loadRoundsFromYaml(cfgText);
   return runPipeline({
     sources: [fileSource(path.join(FIX, "sample_1k.fastq"))],
     rounds,
     settings,
+    pseudocount,
     useWasm,
   });
 }
@@ -133,16 +134,18 @@ function assertCsvSubsetEquals(actual: string, golden: string): void {
 }
 
 describe.each([
-  { label: "TS path", useWasm: false },
-  { label: "WASM path", useWasm: true },
-])("Phase 1+2 parity ($label) vs desktop Python output (sample_1k fixture)", ({ useWasm }) => {
+  { label: "TS path, p=0.5", useWasm: false, pseudocount: 0.5, goldenDir: "golden" },
+  { label: "WASM path, p=0.5", useWasm: true, pseudocount: 0.5, goldenDir: "golden" },
+  { label: "TS path, p=1.0", useWasm: false, pseudocount: 1, goldenDir: "golden-p1" },
+  { label: "WASM path, p=1.0", useWasm: true, pseudocount: 1, goldenDir: "golden-p1" },
+])("Phase 1+2 parity ($label) vs desktop Python output (sample_1k fixture)", ({ useWasm, pseudocount, goldenDir }) => {
   it("run_stats.json: read-counter fields match byte-for-byte", async () => {
     // Phase 6.12 bumped schema_version to 2 and adds an optional
     // library_median_enrich block. The read-acceptance counters (rounds.*,
     // unassigned_breakdown.*, global_unassigned) are unchanged — those are
     // what the parity guard is for. Parse JSON and compare just those.
-    const result = await runFixture(useWasm);
-    const goldenRaw = await readFile(path.join(FIX, "golden", "run_stats.json"), "utf8");
+    const result = await runFixture(useWasm, pseudocount);
+    const goldenRaw = await readFile(path.join(FIX, goldenDir, "run_stats.json"), "utf8");
     const actual = JSON.parse(result.runStatsJson) as Record<string, unknown>;
     const golden = JSON.parse(goldenRaw) as Record<string, unknown>;
     expect(actual.global_unassigned).toEqual(golden.global_unassigned);
@@ -151,8 +154,8 @@ describe.each([
   });
 
   it("Master_Enrichment_Matrix.csv: shared columns match byte-for-byte", async () => {
-    const result = await runFixture(useWasm);
-    const golden = await readFile(path.join(FIX, "golden", "Master_Enrichment_Matrix.csv"), "utf8");
+    const result = await runFixture(useWasm, pseudocount);
+    const golden = await readFile(path.join(FIX, goldenDir, "Master_Enrichment_Matrix.csv"), "utf8");
     const csv = result.analyzer!.csvParts.join("");
     assertCsvSubsetEquals(csv, golden);
   });

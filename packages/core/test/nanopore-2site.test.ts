@@ -131,8 +131,14 @@ describe("runNanoporePipeline — 2-site per-round mode (560 bp amplicon)", () =
     expect(result.analyzer.perSiteCsvParts.length).toBeGreaterThan(1); // header + ≥1 row
     expect(result.analyzer.haplotypeCsvParts.length).toBeGreaterThan(1);
     expect(result.analyzer.haplotypeRows.length).toBeGreaterThan(0);
-    // Top haplotype row by Fitness_vs_WT_Round_2 should be the double mutant W_L.
-    const topHap = result.analyzer.haplotypeRows[0]!;
-    expect(topHap.Haplotype_AA).toBe("W_L"); // TGG=Trp, CTG=Leu
+    // The designed double mutant must retain the largest observed Round_2
+    // count. RPM+p enrichment can legitimately rank a newly observed
+    // zero-baseline haplotype above it, so abundance—not row 0—is the stable
+    // fixture contract.
+    const doubleMut = result.analyzer.haplotypeRows.find((row) => row.Haplotype_AA === "W_L")!;
+    const maxRound2Count = Math.max(
+      ...result.analyzer.haplotypeRows.map((row) => row.Count_Round_2 as number),
+    );
+    expect(doubleMut.Count_Round_2).toBe(maxRound2Count);
   });
 });

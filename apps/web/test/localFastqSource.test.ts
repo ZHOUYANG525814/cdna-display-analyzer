@@ -59,7 +59,7 @@ describe("LocalFastqSource via runPipeline → golden CSV (shared columns)", () 
     const { rounds, settings } = loadConfig(primersText);
 
     for (const useWasm of [false, true]) {
-      const result = await runPipeline({ sources: [source], rounds, settings, useWasm });
+      const result = await runPipeline({ sources: [source], rounds, settings, pseudocount: 0.5, useWasm });
       const csv = result.analyzer!.csvParts.join("");
       // Build a header-name → column-index map for both, intersect, and
       // compare cell values for the shared columns. Join on Peptide_Seq so

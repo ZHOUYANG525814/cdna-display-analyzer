@@ -21,7 +21,7 @@
   "schema_version": 2,
   "statistical_model": {
     "enrichment": "log2((RPM_destination + p_RPM) / (RPM_source + p_RPM))",
-    "pseudocount": 0.5,
+    "pseudocount": 1.0,
     "pseudocount_unit": "RPM",
     "variance": "Enrich2-style four-term Poisson delta method with p_RPM converted per library to p_RPM * passed_qc / 1e6 reads"
   },

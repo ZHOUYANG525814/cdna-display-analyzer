@@ -34,9 +34,8 @@ export interface ColumnDoc {
 export interface MethodsDocument {
   /** Short tool name for the document header. */
   toolName: string;
-  /** Pseudocount used in all log2 fold-change and Z computations. 1.0 in our
-   *  pipeline; Enrich2 uses 0.5. Surfaced because changing this changes
-   *  every numeric column. */
+  /** Product default pseudocount. The actual per-run value can override this
+   *  and is always recorded in exported methods/provenance. */
   pseudocount: number;
   /** Name + short description of the p-value test. */
   pvalueMethod: string;
@@ -71,9 +70,9 @@ export interface MethodsDocument {
 
 export const CDNA_METHODS: MethodsDocument = {
   toolName: "cDNA-DISPLAY Analyzer",
-  pseudocount: 1.0,
+  pseudocount: 0.5,
   pvalueMethod:
-    "Two-sided Wald z-test on the log2 fold-change, using a Poisson delta-method SE",
+    "Two-sided Wald z-test on log2((RPM_destination+p)/(RPM_source+p)), using an Enrich2-style four-term Poisson delta-method SE",
   fdrMethod: "Benjamini-Hochberg per round (independently across all variants in that round)",
   centeringMethod: "Library median of Enrich_Global at each round (robust against hit outliers)",
   sections: [
@@ -130,9 +129,9 @@ export const CDNA_METHODS: MethodsDocument = {
         {
           name: "Enrich_Step_<curr>_vs_<prev>",
           summary: "log2 fold-change between two consecutive rounds.",
-          formula: "Enrich_Step = log₂((RPM_<curr> + 1) / (RPM_<prev> + 1))",
+          formula: "Enrich_Step = log₂[(RPM_<curr>+p)/(RPM_<prev>+p)]",
           notes: [
-            "Pseudocount of 1.0 keeps the formula defined when one round has zero reads for this variant.",
+            "p is the RPM-unit pseudocount recorded for this run.",
             "Useful for \"did this variant suddenly jump between rounds 2 and 3?\" diagnostics.",
           ],
         },
@@ -141,7 +140,7 @@ export const CDNA_METHODS: MethodsDocument = {
           summary:
             "Library-median-centered log₂ fold-change vs the first round — the canonical fold-change column and the CSV's primary sort key. Corrects systematic library-wide drift (sequencing depth, PCR yield, etc.).",
           formula:
-            "Centered_Enrich = log₂((RPM_<r> + 1)/(RPM_<first> + 1))  −  median(that quantity across all variants at round <r>)",
+            "Centered_Enrich = log₂[(RPM_<r>+p)/(RPM_<first>+p)] − median(that quantity)",
           notes: [
             "Median (not mean) so a small number of strong hits doesn't pull the offset and falsely flatten them.",
             "Raw (un-centered) log₂ fold-change is recoverable as `Centered_Enrich + libraryMedian` (the per-round median is reported above).",
@@ -158,9 +157,9 @@ export const CDNA_METHODS: MethodsDocument = {
           summary:
             "Z-statistic — how many standard errors the log₂ fold-change is from zero.",
           formula:
-            "Z = log₂FC / SE,  where  SE = (1/ln 2) · √[ 1/(Count_<r> + 1) + 1/(Count_<first> + 1) ]",
+            "Z = log₂FC / SE, where SE = (1/ln 2)·√[1/(Count_<r>+q_r)+1/(N_<r>+q_r)+1/(Count_<first>+q_0)+1/(N_<first>+q_0)], q_i=p×N_i/10⁶",
           notes: [
-            "Poisson delta-method SE; the underlying log₂ fold-change is the raw (un-centered) quantity. Centering shifts the mean but not the SE, so Z is the same regardless of whether you read Centered_Enrich or the raw fold-change.",
+            "Poisson delta-method SE; Z always uses the raw (un-centered) log₂ fold-change. Centering changes the numerator, so Centered_Enrich must not be substituted into the Z formula.",
             "Anti-conservative for counts below ~5; pseudocount mitigates but doesn't fully fix.",
             "Rule of thumb: |Z| > 2 → suggestive; |Z| > 3 → confidence; |Z| > 5 → strong (modulo multiple testing — use FDR_q).",
           ],
@@ -191,9 +190,10 @@ export const CDNA_METHODS: MethodsDocument = {
           summary:
             "σ² of the log₂ fold-change (Poisson δ-method). Use 1/Var as the per-row inverse-variance weight for downstream ML training.",
           formula:
-            "Var_Enrich = (1/ln 2)² · [ 1/(Count_<r> + 1) + 1/(Count_<first> + 1) ]",
+            "Var_Enrich = (1/ln 2)²·[1/(Count_<r>+q_r)+1/(N_<r>+q_r)+1/(Count_<first>+q_0)+1/(N_<first>+q_0)], q_i=p×N_i/10⁶",
           notes: [
-            "Two-term form (cDNA): only the variant's own counts contribute Poisson variance. The library total `passed_qc_<r>` is treated as fixed (millions of reads, sampling variance negligible), so it does not appear in σ².",
+            "p is specified in RPM; q_i converts it to the equivalent number of reads separately for each library. This keeps score and variance in the same units.",
+            "Four terms contribute: the variant count and passed-QC library total in each of the two rounds.",
             "Mathematically: Var_Enrich = SE²  ⇔  Z = log₂FC / √Var_Enrich. The same σ² is used internally to derive Z.",
             "For ML: `weight = 1 / Var_Enrich`. Variants with rare counts get small weights automatically — their fold-change estimate has high σ², so the model trusts them less.",
           ],
@@ -218,7 +218,7 @@ export const CDNA_METHODS: MethodsDocument = {
       "model.fit(X, y, sample_weight=w)",
   },
   caveats: [
-    "Pseudocount = 1.0 in every log2-based column. Enrich2 / DiMSum use 0.5; the choice affects very-low-count variants. We picked 1.0 for self-consistency.",
+    "The selected pseudocount p is in RPM units and is used consistently in the score and variance. For variance, q_i=p×passed_qc_i/10⁶ converts it to the equivalent raw-count pseudocount. Default p=0.5 RPM; p=1.0 RPM reproduces the historical RPM+1 score.",
     "All Z / p-values are Wald-type (score / SE) from a Poisson delta-method. The Wald approximation is anti-conservative at very low counts. For publication-grade extremes, a Fisher's exact CI or beta-binomial test would be more rigorous; we can add either later.",
     "Centered_Enrich assumes \"most variants are neutral\". When stringent selection eliminates most variants, the library median is shifted away from zero and the centered score over-corrects. Library median is reported above so users can detect this regime.",
     "Enrich_Global (the raw, un-centered log₂ fold-change) was emitted as a separate column in earlier versions but is now derivable as `Centered_Enrich + libraryMedian`. NegLog10Pval was likewise dropped — `−log₁₀(Pval)` is one column away. Both removals make room for Var_Enrich without growing CSV width.",
@@ -232,14 +232,14 @@ export const CDNA_METHODS: MethodsDocument = {
 //
 // Differences from cDNA:
 //   - Variable region is called "ROI" (between two flanking anchors), not "CDS".
-//   - WT counter is available → tier-2 score (Fitness_vs_WT) is the Enrich2 L_v
-//     formula. Anchors all statistical inference on this column.
+//   - WT counter is available → tier-2 score (Fitness_vs_WT) is an RPM+p
+//     variant/reference ratio. Anchors all statistical inference on this column.
 //   - Dual-anchor scoring uses banded approximate matching (Wagner-Fischer) to
 //     tolerate Nanopore's per-base error rate.
 
 export const NANOPORE_METHODS: MethodsDocument = {
   toolName: "Nanopore SSM Analyzer",
-  pseudocount: 1.0,
+  pseudocount: 0.5,
   pvalueMethod:
     "Two-sided Wald z-test on the log2 WT-anchored fitness, using a four-term Poisson delta-method SE",
   fdrMethod: "Benjamini-Hochberg per (site, round) — each site is treated as an independent experiment",
@@ -294,9 +294,9 @@ export const NANOPORE_METHODS: MethodsDocument = {
         {
           name: "Fitness_vs_WT_<r>",
           summary:
-            "WT-anchored log₂ fitness — the Enrich2 L_v formula. Compares the variant's frequency relative to WT in each round.",
+            "WT-anchored log₂ fitness. Compares the RPM-normalized variant abundance relative to the RPM-normalized reference state in each round.",
           formula:
-            "Fitness_vs_WT = log₂[ (Count_v_<r> + 1) / (wt_<r> + 1) ]  −  log₂[ (Count_v_<first> + 1) / (wt_<first> + 1) ]",
+            "Fitness_vs_WT = log₂[(RPM_v_<r>+p)/(RPM_wt_<r>+p)] − log₂[(RPM_v_<first>+p)/(RPM_wt_<first>+p)]",
           notes: [
             "wt_<r> = number of reads at this site whose ROI exactly matches the reference WT in round <r> (separate counter, see run_stats.json → rounds.<r>.sites.<siteName>.wt_count).",
             "Positive = variant outgrows WT; negative = variant is selected against relative to WT; ~0 = variant tracks WT.",
@@ -324,7 +324,7 @@ export const NANOPORE_METHODS: MethodsDocument = {
           name: "Z_Fitness_<r>",
           summary: "Z-statistic for Fitness_vs_WT — distance from neutral in units of SE.",
           formula:
-            "Z = Fitness_vs_WT / SE,  where  SE = (1/ln 2) · √[ 1/(Count_v_<r> + 1) + 1/(wt_<r> + 1) + 1/(Count_v_<first> + 1) + 1/(wt_<first> + 1) ]",
+            "Z = Fitness_vs_WT / SE, where SE = (1/ln 2)·√[1/(Count_v_<r>+q_r)+1/(wt_<r>+q_r)+1/(Count_v_<first>+q_0)+1/(wt_<first>+q_0)], q_i=p×N_i/10⁶",
           notes: [
             "Four-term Poisson SE — all four counts (variant + WT, both rounds) contribute. Larger denominator than the cDNA two-term form by construction.",
             "Anti-conservative when any of the four counts is < ~5.",
@@ -349,7 +349,7 @@ export const NANOPORE_METHODS: MethodsDocument = {
           summary:
             "σ² of Fitness_vs_WT (four-term Poisson δ-method). Use 1/Var as the per-row inverse-variance weight for downstream ML training.",
           formula:
-            "Var_Fitness = (1/ln 2)² · [ 1/(Count_v_<r> + 1) + 1/(wt_<r> + 1) + 1/(Count_v_<first> + 1) + 1/(wt_<first> + 1) ]",
+            "Var_Fitness = (1/ln 2)²·[1/(Count_v_<r>+q_r)+1/(wt_<r>+q_r)+1/(Count_v_<first>+q_0)+1/(wt_<first>+q_0)], q_i=p×N_i/10⁶",
           notes: [
             "Four-term form: unlike cDNA, the denominator (WT count) is itself a small Poisson quantity, so its variance contributes to σ² explicitly.",
             "Mathematically: Var_Fitness = SE²  ⇔  Z = Fitness_vs_WT / √Var_Fitness. Same σ² is used internally to derive Z.",
@@ -377,11 +377,11 @@ export const NANOPORE_METHODS: MethodsDocument = {
       "# then mean- or per-residue-pool the L × 1280 embedding before regression.",
   },
   caveats: [
-    "Pseudocount = 1.0 in every log2-based column. Enrich2 uses 0.5; the choice mainly affects very-low-count variants.",
+    "The selected pseudocount p is in RPM units. Each round converts it to q_i=p×passed_qc_i/10⁶ reads for the four-term variance. Default p=0.5 RPM; p=1.0 RPM remains selectable.",
     "Wald-type Z is anti-conservative at any count < ~5. The pseudocount mitigates but does not eliminate this. For variants with Count_<first> < 5, treat the FDR as a lower bound on the true significance level.",
     "Banded anchor matching tolerates up to maxAnchorSubs substitutions + maxAnchorIndels indels per anchor (defaults: 2 + 1). Variants that fail this tolerance are dropped from the counter entirely, not counted as zero — so a variant absent from the CSV could be either truly absent or repeatedly anchor-failed.",
     "WT counter assumes the reference ROI string is what truly counts as WT in your library. For fully degenerate libraries (e.g. NNN positions), there is no biological WT and `Fitness_vs_WT` should NOT be used — fall back to the cDNA-style RPM normalization on the underlying counts.",
-    "Enrich_Global_<r> and NegLog10Pval_Fitness_<r> columns were dropped in Phase 6.16 to make room for Var_Fitness without growing CSV width. Enrich_Global is recoverable as `log₂((RPM_<r>+1)/(RPM_<first>+1))`; NegLog10Pval is `−log₁₀(Pval_Fitness)`.",
+    "Enrich_Global_<r> and NegLog10Pval_Fitness_<r> columns were dropped in Phase 6.16 to make room for Var_Fitness without growing CSV width. Raw RPM+p enrichment is recoverable from counts, passed-QC totals and the recorded RPM pseudocount; NegLog10Pval is `−log₁₀(Pval_Fitness)`.",
   ],
 };
 
@@ -391,7 +391,7 @@ export const NANOPORE_METHODS: MethodsDocument = {
 export const TARGETED_NANOPORE_METHODS: MethodsDocument = {
   ...NANOPORE_METHODS,
   toolName: "Targeted Nanopore NNK Analyzer",
-  pvalueMethod: "Two-sided Wald z-test on each AA state's RPM enrichment, using a two-count Poisson delta-method SE",
+  pvalueMethod: "Two-sided Wald z-test on each AA state's RPM+p enrichment, using an Enrich2-style four-term Poisson delta-method SE",
   fdrMethod: "Benjamini-Hochberg per (target, round), plus an independent AA-combination family per round",
   centeringMethod: "Eligible-variant median independently per target or AA-combination family",
   sections: [
@@ -424,17 +424,17 @@ export const TARGETED_NANOPORE_METHODS: MethodsDocument = {
     {
       title: "Round-to-baseline enrichment",
       columns: [
-        { name: "Enrichment_<r>_vs_<first>", summary: "Raw log2 RPM fold-change for this amino-acid state or linked combination. Reference states are analyzed identically to every other state.", formula: "log₂[(RPM_<r> + 1) / (RPM_<first> + 1)]" },
+        { name: "Enrichment_<r>_vs_<first>", summary: "Raw RPM-normalized log2 fold-change for this amino-acid state or linked combination. Reference states are analyzed identically to every other state.", formula: "log₂[(RPM_<r>+p)/(RPM_<first>+p)]" },
         { name: "Centered_Enrichment_<r>_vs_<first>", summary: "Raw enrichment minus the median among score-eligible rows in the same target or linked-combination family.", formula: "Enrichment − median(eligible Enrichment)", notes: ["Centering changes the zero point but not ranking. Under severe selection, inspect the reported median because centering can over-correct."] },
       ],
     },
     {
       title: "Statistical inference",
       columns: [
-        { name: "Z_Enrichment_<r>_vs_<first>", summary: "Wald z-statistic for the raw enrichment.", formula: "Z = Enrichment / SE; SE = (1/ln 2)·√[1/(Count_<r>+1) + 1/(Count_<first>+1)]" },
+        { name: "Z_Enrichment_<r>_vs_<first>", summary: "Wald z-statistic for the raw enrichment.", formula: "Z = Enrichment / SE; SE = (1/ln 2)·√[1/(Count_<r>+q_r)+1/(N_<r>+q_r)+1/(Count_<first>+q_0)+1/(N_<first>+q_0)], q_i=p×N_i/10⁶" },
         { name: "Pval_Enrichment_<r>_vs_<first>", summary: "Two-sided z-test p-value for raw enrichment.", formula: "P = 2·(1 − Φ(|Z|))" },
         { name: "FDR_q_<r>_vs_<first>", summary: "Benjamini-Hochberg q-value computed independently within each target, or across the linked-combination family.", notes: ["Reference and non-reference amino-acid states enter the same family with no special classification."] },
-        { name: "Var_Enrichment_<r>_vs_<first>", summary: "Two-count Poisson delta-method variance used for inverse-variance weighting.", formula: "(1/ln 2)²·[1/(Count_<r>+1) + 1/(Count_<first>+1)]" },
+        { name: "Var_Enrichment_<r>_vs_<first>", summary: "Four-term Poisson delta-method variance used for inverse-variance weighting.", formula: "(1/ln 2)²·[1/(Count_<r>+q_r)+1/(N_<r>+q_r)+1/(Count_<first>+q_0)+1/(N_<first>+q_0)], q_i=p×N_i/10⁶" },
       ],
     },
   ],
@@ -445,8 +445,8 @@ export const TARGETED_NANOPORE_METHODS: MethodsDocument = {
     weightExpr: "1 / Var_Enrichment_<lastRound>_vs_<firstRound>; weak counts are automatically down-weighted.",
   },
   caveats: [
-    "Pseudocount = 1.0 in every log2-based column; this choice mainly affects very-low-count variants.",
-    "Without biological replicates, the two-count Poisson variance captures counting uncertainty only and usually underestimates total experimental uncertainty. Z, p and FDR must not be presented as replicate-aware evidence.",
+    "The selected pseudocount p is in RPM units and is used consistently in score and variance; q_i=p×callable_i/10⁶ is its count-scale equivalent for each library. Default p=0.5 RPM; p=1.0 RPM remains selectable.",
+    "Without biological replicates, the four-term Poisson variance captures counting uncertainty only and usually underestimates total experimental uncertainty. Z, p and FDR must not be presented as replicate-aware evidence.",
     "Inference is blank when the Round 0 amino-acid count is below the locked threshold. Raw exact-codon and exact-combination counts are never removed by that threshold.",
     "Reference amino-acid states are ordinary rows and receive their own enrichment. No row is forced to zero by using it as a WT denominator.",
     "Protected-region substitutions and small indels are tolerated up to the locked QC limits. A systematic reference mismatch can therefore reduce yield and should be investigated from the QC funnel rather than reclassified as selection.",
@@ -476,6 +476,8 @@ export interface MethodsRunParams {
   libraryMedian?: Record<string, number>;
   /** Hit counts per round at standard FDR thresholds. */
   hitCounts?: ReadonlyArray<{ label: string; q05: number; q01: number; total: number }>;
+  /** Exact pseudocount used by this run. */
+  pseudocount?: number;
 }
 
 export function formatMethodsAsText(
@@ -502,7 +504,7 @@ export function formatMethodsAsText(
 
   // --- Headline method choices -------------------------------------------
   lines.push("--- Method choices ---");
-  lines.push(`  Pseudocount                       ${doc.pseudocount.toFixed(2)}`);
+  lines.push(`  Pseudocount (RPM)                 ${(runParams.pseudocount ?? doc.pseudocount).toFixed(2)}`);
   lines.push(`  p-value test                      ${doc.pvalueMethod}`);
   lines.push(`  Multiple-testing correction       ${doc.fdrMethod}`);
   lines.push(`  Centering scheme (tier-3 score)   ${doc.centeringMethod}`);

@@ -79,7 +79,7 @@ async function analyze(config: Awaited<ReturnType<typeof loadTargetedConfig>>, m
     roundNames: config.rounds.map((_, i) => `Round ${i}`),
     reference: config.reference,
     sites: config.sites.map((s) => ({ name: s.name, ntStart: s.ntStart, length: s.length, design: "NNK" as const })),
-    settings: { ...config.qc, minTargetBaseQ: 15, minInputCountToScore: 10, reportHaplotypes: true },
+    settings: { ...config.qc, minTargetBaseQ: 15, minInputCountToScore: 10, pseudocount: 0.5, reportHaplotypes: true },
     maxReadsPerSource: maxReads,
   });
   console.log(JSON.stringify({

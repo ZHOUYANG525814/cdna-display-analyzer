@@ -20,6 +20,7 @@
 // total work is well below 1 s on commodity hardware.
 
 import type { PeptideRecord } from "./csvParse";
+import { log2RpmRatio } from "@cdna/core";
 
 const SMALL_COUNT = 5; // any cell < this → fall back to Fisher's exact
 
@@ -145,6 +146,7 @@ export function computeEnrichmentTests(
   destRound: string,
   nSrc: number,
   nDest: number,
+  pseudocount: number,
 ): EnrichmentResult[] {
   if (nSrc === 0 || nDest === 0) return [];
 
@@ -158,10 +160,9 @@ export function computeEnrichmentTests(
     const d = nSrc - b;
     const p = enrichmentPvalue(a, b, c, d);
     pvals[i] = p;
-    // Log2 frequency ratio with a +1 pseudocount, matching the analyzer's
-    // existing enrichment formula. Different from the raw observed log2 ratio
-    // — using the same convention keeps numbers comparable across the UI.
-    const log2FC = Math.log2((a + 1) / (nDest + 1)) - Math.log2((b + 1) / (nSrc + 1));
+    // Reuse the analyzer's one canonical score implementation so fallback
+    // stepwise plots cannot silently diverge from exported CSV values.
+    const log2FC = log2RpmRatio(a, nDest, b, nSrc, pseudocount);
     partial[i] = { peptide: r.peptide, log2FC, countSrc: b, countDest: a, pValue: p };
   }
 
