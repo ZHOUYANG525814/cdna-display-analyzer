@@ -22,6 +22,11 @@ import {
   terminateWorker,
 } from "@/worker/workerClient";
 import { DriveAuthProvider } from "@/adapters/DriveAuthProvider";
+import {
+  findDuplicateFastqGroups,
+  nanoporeZeroCoverage,
+  zeroCoverageMessage,
+} from "@/lib/runGuards";
 
 const CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID as string | undefined;
 
@@ -133,6 +138,34 @@ export function RunStep() {
       }
     }
 
+    try {
+      const duplicateGroups = await findDuplicateFastqGroups(
+        pipelineMode === "per-round"
+          ? rounds.flatMap((round) =>
+              round.file ? [{ file: round.file, label: `${round.name} ← ${round.file.name}` }] : [],
+            )
+          : localFiles.map((file) => ({ file, label: file.name })),
+        pipelineMode === "per-round"
+          ? rounds.flatMap((round) =>
+              round.driveRef ? [{ file: round.driveRef, label: `${round.name} ← ${round.driveRef.name}` }] : [],
+            )
+          : driveFiles.map((file) => ({ file, label: file.name })),
+      );
+      if (duplicateGroups.length > 0) {
+        throw new Error(
+          "Duplicate FASTQ content detected: " +
+          duplicateGroups.map((labels) => labels.join(" ↔ ")).join("; ") +
+          ". Remove duplicate inputs before running.",
+        );
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      pushLog({ ts: Date.now(), tag: "error", msg: message });
+      setErrorMessage(message);
+      setStatus("error");
+      return;
+    }
+
     let driveToken: string | undefined;
     if (jobDriveFiles.length > 0) {
       if (!CLIENT_ID) {
@@ -192,6 +225,17 @@ export function RunStep() {
 
       setOutcome(outcome);
       setTiming(useNanoporeStore.getState().startedAt, Date.now());
+      const zeroCoverage = nanoporeZeroCoverage(
+        outcome,
+        reportHaplotype && sites.length >= 2,
+      );
+      if (zeroCoverage.length > 0) {
+        const message = zeroCoverageMessage(zeroCoverage);
+        pushLog({ ts: Date.now(), tag: "error", msg: message });
+        setErrorMessage(message);
+        setStatus("error");
+        return;
+      }
       setStatus("done");
       pushLog({ ts: Date.now(), tag: "success", msg: "Run complete." });
       // Hop straight to Results so the user sees the numbers.

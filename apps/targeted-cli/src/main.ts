@@ -43,7 +43,7 @@ try {
       status: "valid",
       config: config.configPath,
       referenceLength: config.reference.length,
-      sites: config.sites.map(({ name, ntStart, length, wtDna, wtAa, design }) => ({ name, ntStart, length, wtDna, wtAa, design })),
+      sites: config.sites.map(({ name, ntStart, length, wtDna, wtAa }) => ({ name, ntStart, length, wtDna, wtAa })),
       rounds: config.rounds,
       qc: config.qc,
     }, null, 2));
@@ -67,7 +67,7 @@ function option(name: string): string | undefined {
 }
 
 function usage(): never {
-  console.error("Usage: targeted-nanopore <validate|q-audit|benchmark|analyze> --config design.yaml [--limit 500]");
+  console.error("Usage: targeted-nanopore <validate|q-audit|benchmark|analyze> --config config.yaml [--limit 500]");
   process.exit(2);
 }
 
@@ -78,7 +78,7 @@ async function analyze(config: Awaited<ReturnType<typeof loadTargetedConfig>>, m
     sourceRoundIndices: config.rounds.map((_, i) => i),
     roundNames: config.rounds.map((_, i) => `Round ${i}`),
     reference: config.reference,
-    sites: config.sites.map((s) => ({ name: s.name, ntStart: s.ntStart, length: s.length, design: "NNK" as const })),
+    sites: config.sites.map((s) => ({ name: s.name, ntStart: s.ntStart, length: s.length })),
     settings: { ...config.qc, minTargetBaseQ: 15, minInputCountToScore: 10, pseudocount: 0.5, reportHaplotypes: true },
     maxReadsPerSource: maxReads,
   });

@@ -12,7 +12,6 @@ import type {
   TargetedSiteForm,
 } from "@/state/useTargetedNanoporeStore";
 import type { TargetedNanoporeOutcome } from "@/worker/types";
-import { aminoAcidTargetLabel } from "../tools/nanopore-targeted/targetNaming";
 import { NANOPORE_INPUT_LIMITS, validateNanoporeFileName } from "../tools/nanopore-targeted/inputValidation";
 import { validateProjectName } from "../lib/validation";
 
@@ -61,8 +60,8 @@ export function buildFilterFunnelCsv(outcome: TargetedNanoporeOutcome): string {
 
 export function buildSiteCallabilityCsv(outcome: TargetedNanoporeOutcome): string {
   return csv([
-    ["Round", "Target", "Callable_Total", "Callable_Full", "Callable_Rescued", "Reference_AA_Count", "Low_Target_Q", "Target_Indel", "Not_Covered", "Ambiguous", "Off_Design", "Stop_Codon"],
-    ...outcome.roundNames.flatMap((round) => outcome.siteNames.map((site) => { const s = outcome.statsByRound[round]!.sites[site]!; return [round, site, s.passed_qc, s.callable_full, s.callable_rescued, s.wt_count, s.low_quality, s.target_indel, s.not_covered, s.ambiguous, s.off_design, s.stop_codon]; })),
+    ["Round", "Target", "Callable_Total", "Callable_Full", "Callable_Rescued", "Reference_AA_Count", "Low_Target_Q", "Target_Indel", "Not_Covered", "Ambiguous", "Stop_Codon"],
+    ...outcome.roundNames.flatMap((round) => outcome.siteNames.map((site) => { const s = outcome.statsByRound[round]!.sites[site]!; return [round, site, s.passed_qc, s.callable_full, s.callable_rescued, s.wt_count, s.low_quality, s.target_indel, s.not_covered, s.ambiguous, s.stop_codon]; })),
   ]);
 }
 
@@ -84,7 +83,7 @@ export function buildRunStats(outcome: TargetedNanoporeOutcome, snapshot: Target
     return [round, { ...wholeRead, targets }];
   }));
   return {
-    schemaVersion: "targeted-nanopore-run/v2", generatedAt: new Date().toISOString(),
+    schemaVersion: "targeted-nanopore-run/v3", generatedAt: new Date().toISOString(),
     project: snapshot.projectName, startedAt: toIso(snapshot.startedAt), finishedAt: toIso(snapshot.finishedAt),
     durationSeconds: snapshot.startedAt && snapshot.finishedAt ? (snapshot.finishedAt - snapshot.startedAt) / 1000 : null,
     rounds: outcome.roundNames, targets: outcome.targets, referenceDnaByTarget: outcome.wtBySite,
@@ -117,18 +116,13 @@ export function buildRunStats(outcome: TargetedNanoporeOutcome, snapshot: Target
 
 export function buildLockedConfig(snapshot: TargetedExportSnapshot) {
   return {
-    schemaVersion: "targeted-nanopore-config/v3",
+    schemaVersion: "targeted-nanopore-config/v4",
     calculationModel: "rpm-pseudocount-v1",
     pseudocountUnit: "RPM",
     project: snapshot.projectName,
     reference: snapshot.referenceSeq,
     cds: { start1: snapshot.cdsStart, end1: snapshot.cdsEnd, strand: snapshot.cdsStrand },
-    targets: snapshot.sites.map(({ ntStart }) => ({
-      name: aminoAcidTargetLabel(snapshot.referenceSeq, snapshot.cdsStart, ntStart).name,
-      ntStart,
-      length: 3,
-      design: "NNK",
-    })),
+    targets: snapshot.sites.map(({ ntStart }) => ({ ntStart, length: 3 })),
     rounds: snapshot.rounds.map(({ round, files }) => ({
       round,
       expectedFileNames: files.flatMap((source) => {
@@ -138,7 +132,6 @@ export function buildLockedConfig(snapshot: TargetedExportSnapshot) {
     })),
     settings: {
       ...snapshot.settings,
-      reportHaplotypes: snapshot.sites.length >= 2,
       rescueFlankBases: 30,
     },
     fixedSafeguards: { concatemerLengthRatio: 1.5 },
@@ -153,8 +146,15 @@ export function parseLockedConfig(text: string): TargetedLockedConfigImport {
     throw new Error("Locked config is not valid JSON.");
   }
   const root = record(raw, "Locked config");
-  if (root.schemaVersion !== "targeted-nanopore-config/v3") {
+  const legacyV3 = root.schemaVersion === "targeted-nanopore-config/v3";
+  if (!legacyV3 && root.schemaVersion !== "targeted-nanopore-config/v4") {
     throw new Error("Unsupported locked config schema.");
+  }
+  if (!legacyV3) {
+    exactKeys(root, [
+      "schemaVersion", "calculationModel", "pseudocountUnit", "project",
+      "reference", "cds", "targets", "rounds", "settings", "fixedSafeguards",
+    ], "Locked config");
   }
   if (root.calculationModel !== "rpm-pseudocount-v1") {
     throw new Error("Unsupported enrichment calculation model.");
@@ -176,6 +176,7 @@ export function parseLockedConfig(text: string): TargetedLockedConfigImport {
   }
 
   const cds = record(root.cds, "cds");
+  if (!legacyV3) exactKeys(cds, ["start1", "end1", "strand"], "cds");
   const cdsStart = integer(cds.start1, "cds.start1");
   const cdsEnd = integer(cds.end1, "cds.end1");
   const cdsStrand = cds.strand;
@@ -189,7 +190,8 @@ export function parseLockedConfig(text: string): TargetedLockedConfigImport {
   }
   const sites = root.targets.map((value, index) => {
     const target = record(value, `targets[${index}]`);
-    if (target.length !== 3 || target.design !== "NNK") throw new Error(`targets[${index}] must be a 3-nt NNK target.`);
+    if (!legacyV3) exactKeys(target, ["ntStart", "length"], `targets[${index}]`);
+    if (target.length !== 3) throw new Error(`targets[${index}] must be a 3-nt codon target.`);
     const ntStart = integer(target.ntStart, `targets[${index}].ntStart`);
     if (ntStart < cdsStart || ntStart + 2 > cdsEnd || (ntStart - cdsStart) % 3 !== 0) {
       throw new Error(`targets[${index}] is not on a CDS codon boundary.`);
@@ -200,7 +202,6 @@ export function parseLockedConfig(text: string): TargetedLockedConfigImport {
     name: `site_${String(index + 1).padStart(2, "0")}`,
     ntStart,
     length: 3,
-    design: "NNK" as const,
   })));
 
   if (!Array.isArray(root.rounds) || root.rounds.length < 2 || root.rounds.length > NANOPORE_INPUT_LIMITS.maxRounds) {
@@ -208,6 +209,7 @@ export function parseLockedConfig(text: string): TargetedLockedConfigImport {
   }
   const rounds = root.rounds.map((value, index) => {
     const round = record(value, `rounds[${index}]`);
+    if (!legacyV3) exactKeys(round, ["round", "expectedFileNames"], `rounds[${index}]`);
     if (integer(round.round, `rounds[${index}].round`) !== index) {
       throw new Error("Locked rounds must be consecutive from Round 0.");
     }
@@ -225,6 +227,13 @@ export function parseLockedConfig(text: string): TargetedLockedConfigImport {
   });
 
   const sourceSettings = record(root.settings, "settings");
+  if (!legacyV3) {
+    exactKeys(sourceSettings, [
+      "minReadQ", "minReferenceCoverage", "minAlignmentIdentity",
+      "minProtectedIdentity", "maxProtectedIndelBases", "minTargetBaseQ",
+      "minInputCountToScore", "pseudocount", "rescueFlankBases",
+    ], "settings");
+  }
   const settings: TargetedCallingSettings = {
     minReadQ: bounded(sourceSettings.minReadQ, "settings.minReadQ", 0, 30),
     minReferenceCoverage: bounded(sourceSettings.minReferenceCoverage, "settings.minReferenceCoverage", 0, 1),
@@ -238,17 +247,17 @@ export function parseLockedConfig(text: string): TargetedLockedConfigImport {
   if (settings.minInputCountToScore < 0 || settings.minInputCountToScore > 100_000) {
     throw new Error("settings.minInputCountToScore is outside supported limits.");
   }
-  if (sourceSettings.reportHaplotypes !== true && sourceSettings.reportHaplotypes !== false) {
+  if (
+    legacyV3 &&
+    sourceSettings.reportHaplotypes !== true &&
+    sourceSettings.reportHaplotypes !== false
+  ) {
     throw new Error("settings.reportHaplotypes must be boolean.");
   }
-  if (sites.length >= 2 && sourceSettings.reportHaplotypes !== true) {
-    throw new Error("settings.reportHaplotypes must be true when two or more targets are configured.");
-  }
-  if (sites.length < 2 && sourceSettings.reportHaplotypes !== false) {
-    throw new Error("settings.reportHaplotypes must be false when fewer than two targets are configured.");
-  }
+  const reportHaplotypes = sites.length >= 2;
   if (sourceSettings.rescueFlankBases !== 30) throw new Error("Unsupported rescueFlankBases.");
   const safeguards = record(root.fixedSafeguards, "fixedSafeguards");
+  if (!legacyV3) exactKeys(safeguards, ["concatemerLengthRatio"], "fixedSafeguards");
   if (safeguards.concatemerLengthRatio !== 1.5) throw new Error("Unsupported concatemer safeguard.");
 
   return {
@@ -259,7 +268,9 @@ export function parseLockedConfig(text: string): TargetedLockedConfigImport {
     cdsStrand,
     sites,
     settings,
-    reportHaplotypes: sourceSettings.reportHaplotypes,
+    // v3 briefly allowed stale true/false values that disagreed with target
+    // count. Migration discards that non-effective state; v4 is canonical.
+    reportHaplotypes,
     rounds,
   };
 }
@@ -268,7 +279,7 @@ export function buildTargetedQcReport(outcome: TargetedNanoporeOutcome, snapshot
   const total = sum(outcome.roundNames, (r) => outcome.statsByRound[r]!.total_reads);
   const passed = sum(outcome.roundNames, (r) => outcome.statsByRound[r]!.full_qc_passed);
   const lines = [
-    "=".repeat(85), "              TARGETED NANOPORE NNK EXPERIMENT QC & SUMMARY REPORT", "=".repeat(85), "",
+    "=".repeat(85), "                TARGETED NANOPORE EXPERIMENT QC & SUMMARY REPORT", "=".repeat(85), "",
     `Project Name    : ${snapshot.projectName || "(unnamed)"}`, `Generation Time : ${new Date().toISOString()}`, `Total Reads     : ${total.toLocaleString()}`, `Full-QC Reads   : ${passed.toLocaleString()} (${total ? (passed / total * 100).toFixed(2) : "0.00"}%)`, "",
     "--- 1. EXCLUSIVE WHOLE-READ FILTER FUNNEL ---", buildFilterFunnelCsv(outcome).trim(), "",
     "A read receives one primary whole-read drop reason. Overlapping diagnostic failures remain in run_stats.json. Target rescue is reported separately and is never subtracted twice.", "",
@@ -289,7 +300,7 @@ export function buildTargetedQcReport(outcome: TargetedNanoporeOutcome, snapshot
     "Insertion/deletion overlapping a target codon: that target enters target_indel and is non-callable; other covered targets remain eligible.",
     "Small indel outside targets: projected through CIGAR and tolerated up to the fixed protected-indel limit. Larger disruption fails protected_indel for the whole read.",
     "Partial read: may rescue one target only when both 30-nt flanks are covered and pass protected identity. It cannot create a linked combination.",
-    "Off-NNK and stop codon: retained in exact counts and target QC as design/base-calling diagnostics; not silently removed.", "",
+    "Complete high-quality target codons are counted without assuming the library construction. Stop codons are explicitly flagged and not silently removed.", "",
     "--- 5. INTERPRETATION LIMITS ---",
     "The primary enrichment matrix collapses synonymous codons to amino acids. The reference amino acid and reference combination are ordinary rows with their own enrichment; no WT/non-WT classification changes the statistics. Lossless exact-codon and exact target-combination counts remain in run_stats.json.",
     "Round 0 threshold gates inference only. It does not delete raw counts or RPM.",
@@ -313,6 +324,13 @@ function toIso(value: number | null): string | null { return value == null ? nul
 function record(value: unknown, label: string): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${label} must be an object.`);
   return value as Record<string, unknown>;
+}
+function exactKeys(value: Record<string, unknown>, allowed: string[], label: string): void {
+  const allowedSet = new Set(allowed);
+  const unknown = Object.keys(value).filter((key) => !allowedSet.has(key));
+  const missing = allowed.filter((key) => !(key in value));
+  if (unknown.length > 0) throw new Error(`${label} contains unsupported field(s): ${unknown.join(", ")}.`);
+  if (missing.length > 0) throw new Error(`${label} is missing field(s): ${missing.join(", ")}.`);
 }
 function stringValue(value: unknown, label: string): string {
   if (typeof value !== "string" || !value) throw new Error(`${label} must be a non-empty string.`);

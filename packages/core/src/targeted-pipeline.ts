@@ -51,7 +51,7 @@ export interface TargetedFileStats {
 }
 export interface TargetedSiteRunStats extends NanoporeSiteStats {
   callable_full: number; callable_rescued: number; low_quality: number; target_indel: number;
-  not_covered: number; ambiguous: number; off_design: number; stop_codon: number;
+  not_covered: number; ambiguous: number; stop_codon: number;
 }
 export interface TargetedRoundRunStats extends NanoporeRoundStats {
   total_reads: number; duplicate_read_ids: number; aligned: number; full_qc_passed: number;
@@ -204,7 +204,6 @@ export async function runTargetedNanoporePipeline(req: TargetedPipelineRequest):
         else if (call.status === "target_insertion" || call.status === "target_deletion") ss.target_indel++;
         else if (call.status === "not_covered") ss.not_covered++;
         else if (call.status === "ambiguous") ss.ambiguous++;
-        else if (call.status === "off_design_codon") ss.off_design++;
         else if (call.status === "stop_codon") ss.stop_codon++;
         if ((!qc.passed && !rescued) || !call.codonCallable || call.observedDna == null) continue;
         ss.anchor_found++; ss.passed_qc++;
@@ -267,10 +266,29 @@ export async function runTargetedNanoporePipeline(req: TargetedPipelineRequest):
   const exactHaplotypeCsvParts = req.settings.reportHaplotypes
     ? buildExactHaplotypeCsv(req.roundNames, sites, haplotypeCounters, stats)
     : [];
+  const zeroCoverage = req.roundNames.flatMap((round) => {
+    const roundStats = stats.get(round);
+    const targetIssues = sites.flatMap((site) =>
+      (roundStats?.sites[site.name]?.passed_qc ?? 0) === 0
+        ? [`${round}/${site.name}`]
+        : [],
+    );
+    if (
+      sites.length >= 2 &&
+      req.settings.reportHaplotypes &&
+      (roundStats?.haplotype_passed_qc ?? 0) === 0
+    ) {
+      targetIssues.push(`${round}/linked combinations`);
+    }
+    return targetIssues;
+  });
+  if (zeroCoverage.length > 0) {
+    log(`Invalid effective coverage · ${zeroCoverage.join(", ")}`, "error");
+  }
   log(
     `Pipeline complete · target rows=${analyzer.perSiteRows.length.toLocaleString()} · ` +
       `combination rows=${analyzer.haplotypeRows.length.toLocaleString()} · ${elapsed(startedAt)}`,
-    "success",
+    zeroCoverage.length > 0 ? "error" : "success",
   );
   return { dnaCounters, haplotypeCounters, stats, fileStats, resolvedSites: sites, analyzer, exactCodonCsvParts, exactHaplotypeCsvParts };
 }
@@ -298,7 +316,6 @@ function buildExactCodonCsv(
     for (const dna of [...observed].sort()) {
       const row: Record<string, RowValue> = {
         Target: site.name, Codon_DNA: dna, Variant_AA: translateDna(dna),
-        NNK_Compatible: /^[ACGT][ACGT][GT]$/.test(dna),
       };
       for (const round of rounds) {
         const count = counters.get(round)?.get(site.name)?.get(dna) ?? 0;
@@ -312,7 +329,6 @@ function buildExactCodonCsv(
   const columns: ColumnSpec[] = [
     { name: "Target", type: "string" }, { name: "Codon_DNA", type: "string" },
     { name: "Variant_AA", type: "string" },
-    { name: "NNK_Compatible", type: "bool" },
     ...rounds.flatMap((round) => ([
       { name: `Count_${round}`, type: "int" as const },
       { name: `RPM_${round}`, type: "float" as const },
@@ -379,6 +395,6 @@ function emptyDropReasons(): Record<TargetedPrimaryDropReason, number> { return 
 function emptyFileStats(name: string, round: string): TargetedFileStats { return { name, round, totalReads: 0, duplicateReadIds: 0, aligned: 0, fullQcPassed: 0, rescuedSiteCalls: 0, primaryDropReasons: emptyDropReasons() }; }
 function emptyRoundStats(sites: ReadonlyArray<ResolvedTargetSite>): TargetedRoundRunStats {
   const siteStats: Record<string, TargetedSiteRunStats> = {};
-  for (const site of sites) siteStats[site.name] = { anchor_found: 0, discard_roi_indel: 0, discard_low_q_roi: 0, discard_frameshift: 0, discard_stop_codon: 0, passed_qc: 0, wt_count: 0, callable_full: 0, callable_rescued: 0, low_quality: 0, target_indel: 0, not_covered: 0, ambiguous: 0, off_design: 0, stop_codon: 0 };
+  for (const site of sites) siteStats[site.name] = { anchor_found: 0, discard_roi_indel: 0, discard_low_q_roi: 0, discard_frameshift: 0, discard_stop_codon: 0, passed_qc: 0, wt_count: 0, callable_full: 0, callable_rescued: 0, low_quality: 0, target_indel: 0, not_covered: 0, ambiguous: 0, stop_codon: 0 };
   return { total_reads: 0, duplicate_read_ids: 0, aligned: 0, full_qc_passed: 0, qc_failures: { low_read_q: 0, partial_reference: 0, low_alignment_identity: 0, low_protected_identity: 0, protected_indel: 0 }, primary_drop_reasons: emptyDropReasons(), sites: siteStats, haplotype_passed_qc: 0 };
 }

@@ -148,6 +148,7 @@ describe("runPipeline (end-to-end on in-memory source)", () => {
   it.each([
     ["missing separator", "@bad\nACGT\nnot-plus\nIIII\n"],
     ["truncated record", "@bad\nACGT\n+\n"],
+    ["missing quality before equal-length header", "@bad\nACGTA\n+\n"],
     ["invalid base", "@bad\nACGX\n+\nIIII\n"],
     ["quality length mismatch", "@bad\nACGT\n+\nIII\n"],
     ["invalid quality byte", "@bad\nACGT\n+\nIII \n"],
@@ -208,6 +209,12 @@ describe("runPipeline (end-to-end on in-memory source)", () => {
     expect(logs.some((event) =>
       event.tag === "warning" && event.text.includes("EMPTY FASTQ STREAM")
     )).toBe(true);
+    expect(logs.some((event) =>
+      event.tag === "error" && event.text.includes("Invalid effective coverage")
+    )).toBe(true);
+    expect(logs.some((event) =>
+      event.tag === "success" && event.text.startsWith("Total runtime")
+    )).toBe(false);
   });
 
   it("stops cleanly when the run is cancelled before streaming", async () => {

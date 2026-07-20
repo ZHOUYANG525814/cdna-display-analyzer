@@ -144,7 +144,7 @@ export function SourcesStep() {
       setFileWarnings([]);
       setConfigMessage({
         tone: "success",
-        text: "Locked config imported. Reselect the named sequencing file(s) before running.",
+        text: "Locked config imported. Sequencing filenames are hints only; reselect and verify the source files before running.",
       });
     } catch (error) {
       setConfigMessage({
@@ -373,7 +373,10 @@ export function SourcesStep() {
 
           {expectedFileNames.length > 0 && (
             <div className="mt-4 rounded-md border border-primary/30 bg-primary/5 p-3 text-xs">
-              <p className="font-medium">Files named by imported config</p>
+              <p className="font-medium">Sequencing-file hints from imported config</p>
+              <p className="mt-1 text-muted-foreground">
+                A locked config does not store or verify sequencing-file identity.
+              </p>
               <ul className="mt-1 space-y-1 font-mono text-muted-foreground">
                 {expectedFileNames.map((name) => {
                   const selected = [...localFiles.map((file) => file.name), ...driveFiles.map((file) => file.name)].includes(name);
@@ -389,7 +392,7 @@ export function SourcesStep() {
                   (file) => !expectedFileNames.includes(file.name),
                 ) && (
                   <p className="mt-2 text-amber-700 dark:text-amber-400">
-                    A selected filename differs from the locked config. It is accepted; verify the source before running.
+                    A selected filename differs from the hint. It is accepted because filenames are not locked; verify the source before running.
                   </p>
                 )}
             </div>

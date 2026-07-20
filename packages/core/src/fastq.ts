@@ -138,10 +138,14 @@ export async function* readFastqRecordsResilient(
   source: AsyncIterable<Uint8Array>,
 ): AsyncIterableIterator<FastqRecord> {
   const splitter = new LineSplitter();
-  let state: 0 | 1 | 2 | 3 | 4 = 0; // 4 = skip damaged fragment until next header
+  // 0 header, 1 sequence, 2 separator, 3 quality, 4 recovery,
+  // 5 ambiguous "@..." quality-or-next-header, 6 its possible sequence.
+  let state: 0 | 1 | 2 | 3 | 4 | 5 | 6 = 0;
   let header: Uint8Array = EMPTY;
   let seq: Uint8Array = EMPTY;
   let separator: Uint8Array = EMPTY;
+  let ambiguousAtQuality: Uint8Array = EMPTY;
+  let possibleNextSequence: Uint8Array = EMPTY;
   const consumeLine = function* (line: Uint8Array): IterableIterator<FastqRecord> {
     if (state === 0) {
       if (line[0] === 0x40) { header = line; state = 1; }
@@ -160,9 +164,38 @@ export async function* readFastqRecordsResilient(
       }
     } else if (state === 4) {
       if (line[0] === 0x40) { header = line; state = 1; }
-    } else if (line[0] === 0x40 && (line.length !== seq.length || hasAsciiWhitespace(line))) {
-      yield { header, seq, separator, qual: EMPTY };
-      header = line; state = 1;
+    } else if (state === 3 && line[0] === 0x40) {
+      // Quality strings may legitimately begin with "@". Delay the decision
+      // until enough following lines exist to recognize @header / sequence / +.
+      ambiguousAtQuality = line;
+      state = 5;
+    } else if (state === 5) {
+      if (isPotentialSequenceLine(line)) {
+        possibleNextSequence = line;
+        state = 6;
+      } else {
+        // The ambiguous line was the current record's quality. Emit it and
+        // reprocess this line as the start of the next record.
+        yield { header, seq, separator, qual: ambiguousAtQuality };
+        state = 0;
+        yield* consumeLine(line);
+      }
+    } else if (state === 6) {
+      if (line[0] === 0x2b) {
+        // Confirmed missing quality: the ambiguous @ line is the next header.
+        yield { header, seq, separator, qual: EMPTY };
+        header = ambiguousAtQuality;
+        seq = possibleNextSequence;
+        separator = line;
+        state = 3;
+      } else {
+        // No separator followed the possible sequence, so the ambiguous line
+        // was quality after all. Reprocess the buffered fragment for recovery.
+        yield { header, seq, separator, qual: ambiguousAtQuality };
+        state = 0;
+        yield* consumeLine(possibleNextSequence);
+        yield* consumeLine(line);
+      }
     } else {
       yield { header, seq, separator, qual: line };
       state = 0;
@@ -170,12 +203,40 @@ export async function* readFastqRecordsResilient(
   };
   for await (const chunk of source) for (const line of splitter.consume(chunk)) yield* consumeLine(line);
   for (const line of splitter.flush()) yield* consumeLine(line);
-  if (state !== 0 && state !== 4) yield { header, seq: state >= 2 ? seq : EMPTY, separator: state >= 3 ? separator : EMPTY, qual: EMPTY };
+  // TypeScript does not observe assignments made inside the generator
+  // closure, so snapshot as a number for the EOF state machine.
+  const finalState = state as number;
+  if (finalState === 5) {
+    // At EOF the parsimonious interpretation is a final quality line.
+    yield { header, seq, separator, qual: ambiguousAtQuality };
+  } else if (finalState === 6) {
+    yield { header, seq, separator, qual: ambiguousAtQuality };
+    yield { header: possibleNextSequence, seq: EMPTY, separator: EMPTY, qual: EMPTY };
+  } else if (finalState !== 0 && finalState !== 4) {
+    yield {
+      header,
+      seq: finalState >= 2 ? seq : EMPTY,
+      separator: finalState >= 3 ? separator : EMPTY,
+      qual: EMPTY,
+    };
+  }
 }
 
-function hasAsciiWhitespace(line: Uint8Array): boolean {
-  for (const b of line) if (b === 0x20 || b === 0x09) return true;
-  return false;
+function isPotentialSequenceLine(line: Uint8Array): boolean {
+  if (line.length === 0) return false;
+  for (const byte of line) {
+    const upper = byte >= 0x61 && byte <= 0x7a ? byte - 0x20 : byte;
+    if (
+      upper !== 0x41 &&
+      upper !== 0x43 &&
+      upper !== 0x47 &&
+      upper !== 0x54 &&
+      upper !== 0x4e
+    ) {
+      return false;
+    }
+  }
+  return true;
 }
 
 // Mean Phred+33 score over qual bytes. Empty qual returns 0 (treated as failing

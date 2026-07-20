@@ -128,8 +128,6 @@ export {
 export {
   normalizeReference,
   resolveTargetSites,
-  isAllowedTargetDna,
-  type TargetDesign,
   type TargetSiteInput,
   type ResolvedTargetSite,
   type TargetConfigValidation,

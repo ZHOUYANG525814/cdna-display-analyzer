@@ -433,7 +433,29 @@ export async function runNanoporePipeline(
     }
   }
   log(`Analyzer: ${dtAnalyzer}s · ${analyzer.perSiteRows.length.toLocaleString()} per-site rows`);
-  log(`Total runtime: ${((performance.now() - t0) / 1000).toFixed(1)}s`, "success");
+  const zeroCoverage = roundNames.flatMap((round) => {
+    const roundStats = engine.stats.get(round);
+    const siteIssues = siteNames.flatMap((site) =>
+      (roundStats?.sites[site]?.passed_qc ?? 0) === 0
+        ? [`${round}/${site}`]
+        : [],
+    );
+    if (
+      siteNames.length >= 2 &&
+      settings.reportHaplotype &&
+      (roundStats?.haplotype_passed_qc ?? 0) === 0
+    ) {
+      siteIssues.push(`${round}/linked combinations`);
+    }
+    return siteIssues;
+  });
+  if (zeroCoverage.length > 0) {
+    log(`Invalid effective coverage · ${zeroCoverage.join(", ")}`, "error");
+  }
+  log(
+    `Total runtime: ${((performance.now() - t0) / 1000).toFixed(1)}s`,
+    zeroCoverage.length > 0 ? "error" : "success",
+  );
 
   return {
     dnaCounters: engine.dnaCounters,

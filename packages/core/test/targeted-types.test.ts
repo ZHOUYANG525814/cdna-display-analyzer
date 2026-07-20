@@ -1,13 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { isAllowedTargetDna, resolveTargetSites } from "../src/targeted-types.js";
+import { resolveTargetSites } from "../src/targeted-types.js";
 
 describe("targeted site configuration", () => {
   const reference = "ATGGCTTGGAAACCCGGG";
 
   it("resolves one-based sites, WT codons and amino acids", () => {
     const out = resolveTargetSites(reference, [
-      { name: "site_2", ntStart: 7, design: "NNK" },
-      { name: "site_1", ntStart: 4, allowedDna: ["GCT", "TGG"] },
+      { name: "site_2", ntStart: 7 },
+      { name: "site_1", ntStart: 4 },
     ]);
     expect(out.sites.map((s) => s.name)).toEqual(["site_1", "site_2"]);
     expect(out.sites[0]!.wtDna).toBe("GCT");
@@ -16,17 +16,10 @@ describe("targeted site configuration", () => {
     expect(out.sites[1]!.wtAa).toBe("W");
   });
 
-  it("validates NNK/NNS and explicit allowed DNA", () => {
-    const nnk = resolveTargetSites(reference, [{ name: "x", ntStart: 4, design: "NNK" }]).sites[0]!;
-    expect(isAllowedTargetDna(nnk, "AAG")).toBe(true);
-    expect(isAllowedTargetDna(nnk, "AAT")).toBe(true);
-    expect(isAllowedTargetDna(nnk, "AAC")).toBe(false);
-
-    const explicit = resolveTargetSites(reference, [
-      { name: "x", ntStart: 4, allowedDna: ["GCT", "TGG"] },
-    ]).sites[0]!;
-    expect(isAllowedTargetDna(explicit, "TGG")).toBe(true);
-    expect(isAllowedTargetDna(explicit, "TTT")).toBe(false);
+  it("does not infer a researcher-specific codon design", () => {
+    const site = resolveTargetSites(reference, [{ name: "x", ntStart: 4 }]).sites[0]!;
+    expect(site).not.toHaveProperty("design");
+    expect(site).not.toHaveProperty("allowedDna");
   });
 
   it("rejects overlaps, duplicate names and out-of-range intervals", () => {
@@ -41,4 +34,3 @@ describe("targeted site configuration", () => {
     expect(() => resolveTargetSites(reference, [{ name: "a", ntStart: 18 }])).toThrow(/exceeds/i);
   });
 });
-

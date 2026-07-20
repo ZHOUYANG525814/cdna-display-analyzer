@@ -98,8 +98,8 @@ export function ResultsStep() {
     <div className="mx-auto max-w-6xl space-y-6">
       <div className="grid grid-cols-1 gap-4 md:grid-cols-4">
         <Stat label="Total reads" value={totalReads.toLocaleString()} />
-        <Stat label="Passed QC" value={totalPassed.toLocaleString()} tone="success" />
-        <Stat label="Yield" value={`${yieldPct.toFixed(2)}%`} tone="success" />
+        <Stat label="Passed QC" value={totalPassed.toLocaleString()} tone={totalPassed > 0 ? "success" : "warning"} />
+        <Stat label="Yield" value={`${yieldPct.toFixed(2)}%`} tone={totalPassed > 0 ? "success" : "warning"} />
         <Stat label="Unique peptides" value={topPeptides.totalRows.toLocaleString()} />
       </div>
 

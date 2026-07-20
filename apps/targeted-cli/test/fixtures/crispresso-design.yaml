@@ -4,7 +4,6 @@ reference:
 sites:
   - name: site_A
     ntStart: 7
-    design: NNK
 rounds:
   - name: input
     role: input

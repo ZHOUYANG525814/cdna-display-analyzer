@@ -385,12 +385,12 @@ export const NANOPORE_METHODS: MethodsDocument = {
   ],
 };
 
-/** Full-reference targeted/NNK Nanopore mode. Statistical columns are the
+/** Full-reference targeted Nanopore mode. Statistical columns are the
  * same tested WT-normalized implementation as NANOPORE_METHODS; only read
  * calling and QC semantics differ from the legacy dual-anchor SSM path. */
 export const TARGETED_NANOPORE_METHODS: MethodsDocument = {
   ...NANOPORE_METHODS,
-  toolName: "Targeted Nanopore NNK Analyzer",
+  toolName: "Targeted Nanopore Analyzer",
   pvalueMethod: "Two-sided Wald z-test on each AA state's RPM+p enrichment, using an Enrich2-style four-term Poisson delta-method SE",
   fdrMethod: "Benjamini-Hochberg per (target, round), plus an independent AA-combination family per round",
   centeringMethod: "Eligible-variant median independently per target or AA-combination family",
@@ -450,7 +450,7 @@ export const TARGETED_NANOPORE_METHODS: MethodsDocument = {
     "Inference is blank when the Round 0 amino-acid count is below the locked threshold. Raw exact-codon and exact-combination counts are never removed by that threshold.",
     "Reference amino-acid states are ordinary rows and receive their own enrichment. No row is forced to zero by using it as a WT denominator.",
     "Protected-region substitutions and small indels are tolerated up to the locked QC limits. A systematic reference mismatch can therefore reduce yield and should be investigated from the QC funnel rather than reclassified as selection.",
-    "Off-NNK and stop codons remain visible in counts as QC/design diagnostics; they are not silently discarded.",
+    "Complete high-quality codons are counted without assuming how the researcher constructed the library. Stop codons remain explicitly flagged and are not silently discarded.",
   ],
 };
 

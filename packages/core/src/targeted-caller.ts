@@ -1,11 +1,10 @@
 import { translateDna } from "./dna.js";
-import { isAllowedTargetDna, type ResolvedTargetSite } from "./targeted-types.js";
+import type { ResolvedTargetSite } from "./targeted-types.js";
 import type { TargetedAlignment } from "./targeted-align.js";
 
 export type TargetSiteCallStatus =
   | "wt"
-  | "allowed_variant"
-  | "off_design_codon"
+  | "variant"
   | "stop_codon"
   | "target_insertion"
   | "target_deletion"
@@ -23,10 +22,8 @@ export interface TargetSiteCall {
   readPositions: number[];
   minBaseQ: number | null;
   meanBaseQ: number | null;
-  /** Fixed-length, high-Q DNA call. Includes off-design and stop codons. */
+  /** Fixed-length, high-Q DNA call. Includes stop codons. */
   codonCallable: boolean;
-  /** WT or allowed designed variant; the primary enrichment cohort. */
-  primaryEligible: boolean;
 }
 
 export interface TargetSiteCallSettings {
@@ -105,22 +102,17 @@ export function callTargetSites(
     const meanBaseQ = qs.reduce((a, b) => a + b, 0) / qs.length;
     const aa = site.length % 3 === 0 ? translateDna(dna) : null;
     if (minBaseQ < settings.minBaseQ) {
-      return makeCall(site, "low_quality", dna, aa, positions, minBaseQ, meanBaseQ, false, false);
+      return makeCall(site, "low_quality", dna, aa, positions, minBaseQ, meanBaseQ, false);
     }
     if (dna === site.wtDna) {
-      return makeCall(site, "wt", dna, aa, positions, minBaseQ, meanBaseQ, true, true);
+      return makeCall(site, "wt", dna, aa, positions, minBaseQ, meanBaseQ, true);
     }
-    const allowed = isAllowedTargetDna(site, dna);
     if (aa?.includes("*")) {
-      // TAG is a legitimate member of an NNK library. Keep an allowed stop in
-      // the primary enrichment cohort while retaining a dedicated biological
-      // flag; excluding it would erase the expected negative-selection control.
-      return makeCall(site, "stop_codon", dna, aa, positions, minBaseQ, meanBaseQ, true, allowed);
+      // Keep a complete, high-quality stop call visible instead of silently
+      // deleting an observed state. No library-construction model is assumed.
+      return makeCall(site, "stop_codon", dna, aa, positions, minBaseQ, meanBaseQ, true);
     }
-    if (allowed) {
-      return makeCall(site, "allowed_variant", dna, aa, positions, minBaseQ, meanBaseQ, true, true);
-    }
-    return makeCall(site, "off_design_codon", dna, aa, positions, minBaseQ, meanBaseQ, true, false);
+    return makeCall(site, "variant", dna, aa, positions, minBaseQ, meanBaseQ, true);
   });
 }
 
@@ -141,7 +133,6 @@ function emptyCall(site: ResolvedTargetSite, status: TargetSiteCallStatus): Targ
     minBaseQ: null,
     meanBaseQ: null,
     codonCallable: false,
-    primaryEligible: false,
   };
 }
 
@@ -154,7 +145,6 @@ function makeCall(
   minBaseQ: number,
   meanBaseQ: number,
   codonCallable: boolean,
-  primaryEligible: boolean,
 ): TargetSiteCall {
   return {
     siteName: site.name,
@@ -167,7 +157,6 @@ function makeCall(
     minBaseQ,
     meanBaseQ,
     codonCallable,
-    primaryEligible,
   };
 }
 

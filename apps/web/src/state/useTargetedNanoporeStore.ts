@@ -328,7 +328,7 @@ export function targetedInputErrors(state: Pick<TargetedNanoporeState,
     errors.push("CDS length must be divisible by 3.");
   }
   try {
-    resolveTargetSites(reference, state.sites.map((s) => ({ name: s.name, ntStart: s.ntStart, length: 3, design: "ANY" })));
+    resolveTargetSites(reference, state.sites.map((s) => ({ name: s.name, ntStart: s.ntStart, length: 3 })));
   } catch (error) {
     errors.push(error instanceof Error ? error.message : String(error));
   }
@@ -351,7 +351,7 @@ export const targetedSourceErrors = (state: Pick<TargetedNanoporeState, "project
 
 export function targetedDesignErrors(state: Pick<TargetedNanoporeState, "referenceSeq" | "sites">): string[] {
   try {
-    resolveTargetSites(state.referenceSeq, state.sites.map((s) => ({ name: s.name, ntStart: s.ntStart, length: 3, design: "ANY" })));
+    resolveTargetSites(state.referenceSeq, state.sites.map((s) => ({ name: s.name, ntStart: s.ntStart, length: 3 })));
     return [];
   } catch (error) {
     return [error instanceof Error ? error.message : String(error)];

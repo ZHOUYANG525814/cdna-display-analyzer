@@ -576,7 +576,7 @@ function RoundFilePicker({
       </div>
       {lockedNameMismatch && (
         <p className="mt-2 text-xs text-amber-700 dark:text-amber-400">
-          Locked config expected {expectedFileName}; the selected file is accepted, but verify this round assignment.
+          Filename hint: {expectedFileName}. The selected file is accepted because sequencing-file identity is not stored; verify this round assignment.
         </p>
       )}
       {error && <p className="mt-2 text-xs text-destructive">{error}</p>}

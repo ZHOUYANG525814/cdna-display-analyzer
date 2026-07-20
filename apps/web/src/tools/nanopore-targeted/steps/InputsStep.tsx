@@ -55,7 +55,7 @@ export function InputsStep() {
     if (picked.length > accepted.length) setFileErrors((old) => [...old, `Round file limit is ${NANOPORE_INPUT_LIMITS.maxFilesPerRound}; excess Drive selections were rejected.`]);
     const expected = targetRound?.files.flatMap((source) => !source.file && !source.driveRef && source.expectedFileName ? [source.expectedFileName] : []) ?? [];
     if (expected.length > 0 && accepted.some((file) => !expected.includes(file.name))) {
-      setConfigMessage({ tone: "warning", text: "One or more filenames differ from the locked config. They were accepted; verify the round assignment before running." });
+      setConfigMessage({ tone: "warning", text: "One or more filenames differ from the config hints. They were accepted because sequencing-file identity is not locked; verify the round assignment." });
     }
     s.addDriveFiles(roundId, accepted);
   };
@@ -76,7 +76,7 @@ export function InputsStep() {
     if (rejected.length) setFileErrors((old) => [...old, ...rejected]);
     const expected = targetRound?.files.flatMap((source) => !source.file && !source.driveRef && source.expectedFileName ? [source.expectedFileName] : []) ?? [];
     if (expected.length > 0 && accepted.some((file) => !expected.includes(file.name))) {
-      setConfigMessage({ tone: "warning", text: "One or more filenames differ from the locked config. They were accepted; verify the round assignment before running." });
+      setConfigMessage({ tone: "warning", text: "One or more filenames differ from the config hints. They were accepted because sequencing-file identity is not locked; verify the round assignment." });
     }
     s.addLocalFiles(roundId, accepted);
   };
@@ -91,7 +91,7 @@ export function InputsStep() {
       setDriveError(null);
       setConfigMessage({
         tone: "success",
-        text: "Locked config imported. Reselect each named sequencing file to enable the run.",
+        text: "Locked config imported. Filenames are hints only; reselect and verify every sequencing file before running.",
       });
     } catch (error) {
       setConfigMessage({ tone: "error", text: error instanceof Error ? error.message : String(error) });
@@ -100,7 +100,7 @@ export function InputsStep() {
 
   const loadDemo = () => {
     useTargetedNanoporeStore.setState({
-      currentStep: "inputs", projectName: "Nanopore_NNK_demo",
+      currentStep: "inputs", projectName: "Nanopore_targeted_demo",
       rounds: buildNanoporeDemoRounds(), referenceSeq: NANOPORE_DEMO_REFERENCE,
       cdsStart: 1, cdsEnd: NANOPORE_DEMO_REFERENCE.length, cdsStrand: "+",
       sites: NANOPORE_DEMO_SITES.map((site) => ({ ...site })),
@@ -140,6 +140,7 @@ export function InputsStep() {
             const mismatch = actual && src.expectedFileName && actual !== src.expectedFileName;
             return <div key={src.id} className="flex items-center justify-between rounded bg-muted px-2 py-1 text-xs"><span>{actual ?? src.expectedFileName} <span className="text-muted-foreground">({src.file ? "local" : src.driveRef ? "Drive" : "expected — select file"})</span>{mismatch ? <span className="ml-2 text-amber-700 dark:text-amber-400">expected: {src.expectedFileName}</span> : null}</span><button onClick={() => s.removeSource(round.id, src.id)}>×</button></div>;
           })}</div>
+          {round.files.some((src) => src.expectedFileName) && <p className="mt-2 text-xs text-muted-foreground">Filename hints do not verify sequencing-file identity.</p>}
         </div>)}
         <Button variant="outline" onClick={s.addRound}>Add next round</Button>
         {driveError && <p className="text-sm text-destructive">{driveError}</p>}

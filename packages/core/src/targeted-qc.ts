@@ -29,7 +29,7 @@ export interface TargetedQcResult {
 }
 
 /**
- * Evaluate strict QC while masking designed target bases. Protected identity is
+ * Evaluate strict QC while masking specified target bases. Protected identity is
  * matches / (matches + mismatches + inserted + deleted) outside target sites.
  */
 export function evaluateTargetedQc(

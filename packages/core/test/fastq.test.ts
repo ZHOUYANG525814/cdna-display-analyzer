@@ -89,9 +89,35 @@ describe("readFastqRecordsResilient — malformed input recovery", () => {
   });
 
   it("accepts a valid quality line beginning with @", async () => {
-    const records = await collect(readFastqRecordsResilient(iter([bytesOf("@r\nACGT\n+\n@III\n")])));
-    expect(records).toHaveLength(1);
+    const input = "@r\nACGT\n+\n@III\n@next\nTGCA\n+\nIIII\n";
+    const records = await collect(readFastqRecordsResilient(iter([bytesOf(input)])));
+    expect(records).toHaveLength(2);
     expect(bytesToAscii(records[0]!.qual)).toBe("@III");
+    expect(bytesToAscii(records[1]!.header)).toBe("@next");
+  });
+
+  it("does not consume an equal-length next header as the missing quality line", async () => {
+    // "@abc" is exactly four bytes, the same length as the preceding sequence.
+    // The old heuristic silently accepted it as quality and lost the real read.
+    const input = "@bad\nACGT\n+\n@abc\nTGCA\n+\nIIII\n";
+    const records = await collect(readFastqRecordsResilient(iter([bytesOf(input)])));
+    expect(records).toHaveLength(2);
+    expect(isValidFastqRecord(records[0]!)).toBe(false);
+    expect(bytesToAscii(records[1]!.header)).toBe("@abc");
+    expect(bytesToAscii(records[1]!.seq)).toBe("TGCA");
+    expect(isValidFastqRecord(records[1]!)).toBe(true);
+  });
+
+  it("recovers the equal-length-header edge at every stream split", async () => {
+    const input = bytesOf("@bad\nACGT\n+\n@abc\nTGCA\n+\nIIII\n");
+    for (let split = 0; split <= input.length; split++) {
+      const records = await collect(
+        readFastqRecordsResilient(iter([input.slice(0, split), input.slice(split)])),
+      );
+      expect(records, `split=${split}`).toHaveLength(2);
+      expect(isValidFastqRecord(records[0]!), `split=${split}`).toBe(false);
+      expect(isValidFastqRecord(records[1]!), `split=${split}`).toBe(true);
+    }
   });
 });
 

@@ -3,7 +3,7 @@
 This is the local, auditable entry point for the full-amplicon targeted sibling
 pipeline. It does not replace the existing fixed-ROI SSM pipeline.
 
-The design file is mandatory. In particular, target coordinates are never
+The configuration file is mandatory. In particular, target coordinates are never
 inferred from noisy mutation peaks.
 
 ```yaml
@@ -14,7 +14,6 @@ sites:
   - name: site_01
     ntStart: 101       # 1-based reference coordinate
     length: 3
-    design: NNK
 rounds:
   - name: original
     role: input
@@ -34,10 +33,10 @@ From the `web` directory:
 
 ```sh
 pnpm --filter @cdna/targeted-cli build
-node apps/targeted-cli/dist/main.js validate --config design.yaml
-node apps/targeted-cli/dist/main.js q-audit --config design.yaml --limit 500
-node apps/targeted-cli/dist/main.js benchmark --config design.yaml --limit 500
-node apps/targeted-cli/dist/main.js analyze --config design.yaml --limit 5000
+node apps/targeted-cli/dist/main.js validate --config config.yaml
+node apps/targeted-cli/dist/main.js q-audit --config config.yaml --limit 500
+node apps/targeted-cli/dist/main.js benchmark --config config.yaml --limit 500
+node apps/targeted-cli/dist/main.js analyze --config config.yaml --limit 5000
 ```
 
 `q-audit` reports Dorado's `qs:f` header score separately from a score

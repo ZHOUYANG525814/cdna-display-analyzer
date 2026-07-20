@@ -406,7 +406,19 @@ export async function runPipeline(req: PipelineRequest): Promise<PipelineResult>
     req.pseudocount,
     analyzer?.libraryMedianEnrich,
   );
-  log(`Total runtime: ${((performance.now() - t0) / 1000).toFixed(1)}s`, "success");
+  const zeroCoverageRounds = roundNames.filter(
+    (round) => (engine.stats.get(round)?.passed_qc ?? 0) === 0,
+  );
+  if (zeroCoverageRounds.length > 0) {
+    log(
+      `Invalid effective coverage · zero passed-QC reads in ${zeroCoverageRounds.join(", ")}`,
+      "error",
+    );
+  }
+  log(
+    `Total runtime: ${((performance.now() - t0) / 1000).toFixed(1)}s`,
+    zeroCoverageRounds.length > 0 ? "error" : "success",
+  );
 
   return {
     globalUnassigned: engine.globalUnassigned,

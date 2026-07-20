@@ -11,7 +11,7 @@ const outcome = {
     total_reads: 100, duplicate_read_ids: 7, aligned: 60, full_qc_passed: 50,
     qc_failures: { low_read_q: 1, partial_reference: 2, low_alignment_identity: 3, low_protected_identity: 4, protected_indel: 5 },
     primary_drop_reasons: { ...emptyDrops }, haplotype_passed_qc: 50,
-    sites: { A1: { anchor_found: 55, discard_roi_indel: 0, discard_low_q_roi: 0, discard_frameshift: 0, discard_stop_codon: 0, passed_qc: 55, wt_count: 40, callable_full: 50, callable_rescued: 5, low_quality: 2, target_indel: 3, not_covered: 4, ambiguous: 1, off_design: 2, stop_codon: 1 } },
+    sites: { A1: { anchor_found: 55, discard_roi_indel: 0, discard_low_q_roi: 0, discard_frameshift: 0, discard_stop_codon: 0, passed_qc: 55, wt_count: 40, callable_full: 50, callable_rescued: 5, low_quality: 2, target_indel: 3, not_covered: 4, ambiguous: 1, stop_codon: 1 } },
   }])), fileStats: [], libraryMedianFitness: {}, hitCounts: [], perSiteCsvBlob: null, haplotypeCsvBlob: null, exactCodonCsvBlob: null, exactHaplotypeCsvBlob: null, perSiteRowsPreview: [], haplotypeRowsPreview: [], perSiteRowsForViz: [], exactCodonCounts: { "Round 0": { A1: { GCT: 40 } } }, exactHaplotypeCounts: { "Round 0": {} }, haplotypeStatistics: [],
 } as TargetedNanoporeOutcome;
 
@@ -40,6 +40,7 @@ describe("targeted Nanopore result artifacts", () => {
   it("round-trips locked settings while serializing filenames only", () => {
     const locked = buildLockedConfig(snapshot);
     const serialized = JSON.stringify(locked);
+    expect(locked.schemaVersion).toBe("targeted-nanopore-config/v4");
     expect(locked.calculationModel).toBe("rpm-pseudocount-v1");
     expect(locked.pseudocountUnit).toBe("RPM");
     expect(serialized).toContain("input.fastq");
@@ -47,6 +48,8 @@ describe("targeted Nanopore result artifacts", () => {
     expect(serialized).not.toContain("secret-drive-id");
     expect(serialized).not.toContain("sizeBytes");
     expect(serialized).not.toContain("startedAt");
+    expect(serialized).not.toContain("design");
+    expect(locked.settings).not.toHaveProperty("reportHaplotypes");
     const imported = parseLockedConfig(serialized);
     expect(imported.settings.pseudocount).toBe(0.5);
     expect(imported.rounds.map((round) => round.expectedFileNames)).toEqual([
@@ -84,6 +87,7 @@ describe("targeted Nanopore result artifacts", () => {
     expect(() => parseLockedConfig("{")).toThrow(/JSON/i);
     expect(() => parseLockedConfig("[]")).toThrow(/object/i);
     const invalid: Array<[string, unknown]> = [
+      ["unknown root field", { ...locked, futureOption: true }],
       ["model", { ...locked, calculationModel: "counts" }],
       ["unit", { ...locked, pseudocountUnit: "count" }],
       ["project", { ...locked, project: "<script>" }],
@@ -91,9 +95,9 @@ describe("targeted Nanopore result artifacts", () => {
       ["CDS strand", { ...locked, cds: { ...locked.cds, strand: "?" } }],
       ["CDS frame", { ...locked, cds: { ...locked.cds, end1: 59 } }],
       ["targets", { ...locked, targets: [] }],
-      ["target design", {
+      ["unsupported target design", {
         ...locked,
-        targets: [{ ...locked.targets[0], design: "ANY" }],
+        targets: [{ ...locked.targets[0], design: "random-library-model" }],
       }],
       ["round sequence", {
         ...locked,
@@ -139,6 +143,34 @@ describe("targeted Nanopore result artifacts", () => {
     for (const [label, value] of invalid) {
       expect(() => parseLockedConfig(JSON.stringify(value)), label).toThrow();
     }
+  });
+  it("migrates legacy v3 configs into the canonical construction-agnostic model", () => {
+    const current = buildLockedConfig(snapshot);
+    const legacy = {
+      ...current,
+      schemaVersion: "targeted-nanopore-config/v3",
+      targets: current.targets.map((target, index) => ({
+        name: `legacy_${index}`,
+        ...target,
+        design: "NNK",
+      })),
+      settings: {
+        ...current.settings,
+        // Older v3 exports could retain this stale UI state for one target.
+        reportHaplotypes: true,
+      },
+    };
+    const migrated = parseLockedConfig(JSON.stringify(legacy));
+    expect(migrated.reportHaplotypes).toBe(false);
+    useTargetedNanoporeStore.getState().loadLockedConfig(migrated);
+    expect(buildLockedConfig({
+      ...snapshot,
+      sites: useTargetedNanoporeStore.getState().sites,
+      reportHaplotypes: useTargetedNanoporeStore.getState().reportHaplotypes,
+    })).toMatchObject({
+      schemaVersion: "targeted-nanopore-config/v4",
+      targets: [{ ntStart: 1, length: 3 }],
+    });
   });
   it("exports exclusive and target-specific QC without dropping reason columns", () => {
     expect(buildFilterFunnelCsv(outcome)).toContain("low_alignment_identity");

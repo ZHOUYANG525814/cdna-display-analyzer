@@ -15,6 +15,11 @@ import {
   terminateWorker,
 } from "@/worker/workerClient";
 import { aminoAcidTargetLabel } from "../targetNaming";
+import {
+  findDuplicateFastqGroups,
+  targetedZeroCoverage,
+  zeroCoverageMessage,
+} from "@/lib/runGuards";
 
 const CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID as string | undefined;
 
@@ -100,6 +105,35 @@ export function RunStep() {
           }
         }
       }
+      const duplicateGroups = await findDuplicateFastqGroups(
+        current.rounds.flatMap((round) =>
+          round.files.flatMap((source) =>
+            source.file
+              ? [{
+                  file: source.file,
+                  label: `Round ${round.round} ← ${source.file.name}`,
+                }]
+              : [],
+          ),
+        ),
+        current.rounds.flatMap((round) =>
+          round.files.flatMap((source) =>
+            source.driveRef
+              ? [{
+                  file: source.driveRef,
+                  label: `Round ${round.round} ← ${source.driveRef.name}`,
+                }]
+              : [],
+          ),
+        ),
+      );
+      if (duplicateGroups.length > 0) {
+        throw new Error(
+          "Duplicate FASTQ content detected: " +
+          duplicateGroups.map((labels) => labels.join(" ↔ ")).join("; ") +
+          ". Remove duplicate inputs before running.",
+        );
+      }
 
       let driveToken: string | undefined;
       if (driveFiles.length) {
@@ -123,7 +157,6 @@ export function RunStep() {
             ).name,
             ntStart: site.ntStart,
             length: 3,
-            design: "NNK" as const,
           })),
           settings: {
             ...current.settings,
@@ -141,6 +174,21 @@ export function RunStep() {
 
       const latest = useTargetedNanoporeStore.getState();
       if (latest.runState.status === "cancelled") return;
+      const zeroCoverage = targetedZeroCoverage(
+        outcome,
+        current.reportHaplotypes && current.sites.length >= 2,
+      );
+      if (zeroCoverage.length > 0) {
+        const message = zeroCoverageMessage(zeroCoverage);
+        latest.appendRunLog({ tag: "error", msg: message });
+        latest.setRunState({
+          status: "error",
+          error: message,
+          outcome,
+          finishedAt: Date.now(),
+        });
+        return;
+      }
       latest.appendRunLog({ tag: "success", msg: "Run complete; opening results." });
       latest.setRunState({
         status: "done",

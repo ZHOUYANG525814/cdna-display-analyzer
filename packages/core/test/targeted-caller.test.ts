@@ -8,8 +8,8 @@ const ENC = new TextEncoder();
 describe("targeted multi-site caller", () => {
   const reference = "ACGTCAGCTAAATGGCCGTA";
   const sites = resolveTargetSites(reference, [
-    { name: "site_A", ntStart: 7, allowedDna: ["GCT", "TGG"] },
-    { name: "site_B", ntStart: 13, design: "NNK" },
+    { name: "site_A", ntStart: 7 },
+    { name: "site_B", ntStart: 13 },
   ]).sites;
 
   it("calls WT and allowed variants from one full alignment", () => {
@@ -17,29 +17,28 @@ describe("targeted multi-site caller", () => {
     const aln = alignTargetedReferenceAscii(reference, read, { seedK: 5, initialBand: 4, maxBand: 32 });
     const calls = callTargetSites(ENC.encode(reference), ENC.encode(read), ENC.encode("I".repeat(read.length)), aln, sites, { minBaseQ: 15 });
     expect(calls.map((c) => [c.siteName, c.status, c.observedDna])).toEqual([
-      ["site_A", "allowed_variant", "TGG"],
+      ["site_A", "variant", "TGG"],
       ["site_B", "wt", "TGG"],
     ]);
     expect(buildTargetHaplotype(calls)).toBe("TGG|TGG");
   });
 
-  it("keeps off-design codons callable but not primary-eligible", () => {
+  it("keeps any complete high-quality codon callable without a design assumption", () => {
     const read = "ACGTCAACCAAATGGCCGTA";
     const aln = alignTargetedReferenceAscii(reference, read, { seedK: 5, initialBand: 4, maxBand: 32 });
     const calls = callTargetSites(ENC.encode(reference), ENC.encode(read), ENC.encode("I".repeat(read.length)), aln, sites, { minBaseQ: 15 });
-    expect(calls[0]!.status).toBe("off_design_codon");
+    expect(calls[0]!.status).toBe("variant");
     expect(calls[0]!.codonCallable).toBe(true);
-    expect(calls[0]!.primaryEligible).toBe(false);
   });
 
-  it("keeps an NNK-allowed stop codon in enrichment with a stop flag", () => {
-    const stopSites = resolveTargetSites(reference, [{ name: "site_B", ntStart: 13, design: "NNK" }]).sites;
+  it("keeps a stop codon in enrichment with an explicit stop flag", () => {
+    const stopSites = resolveTargetSites(reference, [{ name: "site_B", ntStart: 13 }]).sites;
     const read = reference.slice(0, 12) + "TAG" + reference.slice(15);
     const aln = alignTargetedReferenceAscii(reference, read, { seedK: 5, initialBand: 4, maxBand: 32 });
     const [call] = callTargetSites(ENC.encode(reference), ENC.encode(read), ENC.encode("I".repeat(read.length)), aln, stopSites, { minBaseQ: 15 });
     expect(call?.status).toBe("stop_codon");
     expect(call?.observedAa).toBe("*");
-    expect(call?.primaryEligible).toBe(true);
+    expect(call?.codonCallable).toBe(true);
   });
 
   it("does not let one low-Q site erase another callable site", () => {

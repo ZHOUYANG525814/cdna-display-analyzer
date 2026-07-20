@@ -278,6 +278,12 @@ describe("runNanoporePipeline — malformed and abnormal flows", () => {
     expect(logs.some((event) =>
       event.tag === "warning" && event.text.includes("EMPTY FASTQ STREAM")
     )).toBe(true);
+    expect(logs.some((event) =>
+      event.tag === "error" && event.text.includes("Invalid effective coverage")
+    )).toBe(true);
+    expect(logs.some((event) =>
+      event.tag === "success" && event.text.startsWith("Total runtime")
+    )).toBe(false);
   });
 
   it("stops cleanly when cancelled before streaming", async () => {

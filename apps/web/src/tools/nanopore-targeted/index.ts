@@ -10,7 +10,7 @@ export const nanoporeTool: Tool = {
   id: "nanopore-targeted",
   name: "Nanopore Analyzer",
   shortName: "Nanopore",
-  description: "Full-amplicon QC and Round 0-normalized enrichment for targeted NNK/SSM codons.",
+  description: "Full-amplicon QC and Round 0-normalized enrichment for researcher-defined target codons.",
   icon: ScanLine,
   steps: [
     { id: "inputs", label: "Inputs", blurb: "Rounds + CDS + targets", Component: InputsStep },

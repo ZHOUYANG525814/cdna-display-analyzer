@@ -163,7 +163,7 @@ export interface TargetedNanoporeJob {
   sourceRoundIndices: number[];
   roundNames: string[];
   reference: string;
-  sites: Array<{ name: string; ntStart: number; length: 3; design: "NNK" }>;
+  sites: Array<{ name: string; ntStart: number; length: 3 }>;
   settings: TargetedPipelineSettings;
 }
 

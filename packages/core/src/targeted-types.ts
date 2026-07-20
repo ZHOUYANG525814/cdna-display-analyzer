@@ -1,16 +1,11 @@
 import { translateDna } from "./dna.js";
 
-export type TargetDesign = "ANY" | "NNK" | "NNS";
-
 export interface TargetSiteInput {
   name: string;
   /** One-based nucleotide coordinate of the first base in the reference. */
   ntStart: number;
   /** Defaults to 3. Non-codon regions can be represented explicitly later. */
   length?: number;
-  design?: TargetDesign;
-  /** Explicit allowed DNA strings. Mutually exclusive with NNK/NNS. */
-  allowedDna?: ReadonlyArray<string>;
 }
 
 export interface ResolvedTargetSite {
@@ -21,8 +16,6 @@ export interface ResolvedTargetSite {
   length: number;
   wtDna: string;
   wtAa: string | null;
-  design: TargetDesign;
-  allowedDna: ReadonlySet<string> | null;
 }
 
 export interface TargetConfigValidation {
@@ -67,22 +60,6 @@ export function resolveTargetSites(
       throw new Error(`Site ${name}: interval ${input.ntStart}-${end0} exceeds reference length ${reference.length}.`);
     }
 
-    const design = input.design ?? "ANY";
-    if (input.allowedDna && design !== "ANY") {
-      throw new Error(`Site ${name}: allowedDna cannot be combined with design=${design}.`);
-    }
-    let allowedDna: ReadonlySet<string> | null = null;
-    if (input.allowedDna) {
-      const values = input.allowedDna.map((v) => v.replace(/\s/g, "").toUpperCase());
-      if (values.length === 0) throw new Error(`Site ${name}: allowedDna is empty.`);
-      for (const value of values) {
-        if (value.length !== length || /[^ACGT]/.test(value)) {
-          throw new Error(`Site ${name}: invalid allowed DNA sequence ${value}.`);
-        }
-      }
-      allowedDna = new Set(values);
-    }
-
     const wtDna = reference.slice(start0, end0);
     sites.push({
       name,
@@ -92,8 +69,6 @@ export function resolveTargetSites(
       length,
       wtDna,
       wtAa: length % 3 === 0 && !wtDna.includes("N") ? translateDna(wtDna) : null,
-      design,
-      allowedDna,
     });
   }
 
@@ -107,13 +82,3 @@ export function resolveTargetSites(
   }
   return { reference, sites };
 }
-
-export function isAllowedTargetDna(site: ResolvedTargetSite, dnaInput: string): boolean {
-  const dna = dnaInput.toUpperCase();
-  if (dna.length !== site.length || /[^ACGT]/.test(dna)) return false;
-  if (site.allowedDna) return site.allowedDna.has(dna);
-  if (site.design === "NNK") return site.length === 3 && /[ACGT][ACGT][GT]/.test(dna);
-  if (site.design === "NNS") return site.length === 3 && /[ACGT][ACGT][CG]/.test(dna);
-  return true;
-}
-

@@ -4,10 +4,8 @@ reference:
 sites:
   - name: site_A
     ntStart: 7
-    design: NNK
   - name: site_B
     ntStart: 13
-    design: ANY
 rounds:
   - name: input
     role: input
