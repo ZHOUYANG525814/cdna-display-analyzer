@@ -31,6 +31,28 @@ describe("unified Nanopore input whitelist", () => {
     expect((await peekNanoporeFastq(file)).ok).toBe(false);
   });
 
+  it("accepts a valid 50 kb first read instead of failing the bounded peek", async () => {
+    const sequence = "ACGTN".repeat(10_000);
+    const file = new File(
+      [`@long qs:f:20\n${sequence}\n+\n${"I".repeat(sequence.length)}\n`],
+      "long.fastq",
+    );
+    expect(await peekNanoporeFastq(file)).toEqual({ ok: true });
+  });
+
+  it("rejects truncated, invalid-base, invalid-quality and corrupt gzip inputs", async () => {
+    const files = [
+      new File(["@r\nACGT\n+\n"], "truncated.fastq"),
+      new File(["@ \nACGT\n+\nIIII\n"], "empty-id.fastq"),
+      new File(["@r\nACGX\n+\nIIII\n"], "base.fastq"),
+      new File(["@r\nACGT\n+\nIII \n"], "quality.fastq"),
+      new File([new Uint8Array([0x1f, 0x8b, 0x08, 0xff])], "corrupt.fastq.gz"),
+    ];
+    for (const file of files) {
+      expect((await peekNanoporeFastq(file)).ok, file.name).toBe(false);
+    }
+  });
+
   it("round-trips a .fastqsanger.gz through streaming compression, peek, and decompression", async () => {
     const raw = "@gz qs:f:20\nACGTNACGTN\n+\nIIIIIIIIII\n";
     const compressed = await new Response(

@@ -144,4 +144,119 @@ describe("runPipeline (end-to-end on in-memory source)", () => {
     expect(result.stats.get("R0")!.passed_qc).toBe(2);
     expect(result.dnaCounters.get("R0")!.get("ATGGCCAAA")).toBe(2);
   });
+
+  it.each([
+    ["missing separator", "@bad\nACGT\nnot-plus\nIIII\n"],
+    ["truncated record", "@bad\nACGT\n+\n"],
+    ["invalid base", "@bad\nACGX\n+\nIIII\n"],
+    ["quality length mismatch", "@bad\nACGT\n+\nIII\n"],
+    ["invalid quality byte", "@bad\nACGT\n+\nIII \n"],
+    ["empty read ID", "@\nACGT\n+\nIIII\n"],
+    ["junk before header", "not-a-header\njunk\n"],
+  ])("counts %s as malformed and recovers at the next valid record", async (_label, malformed) => {
+    const logs: Array<{ text: string; tag: string }> = [];
+    const valid = mkFastq([
+      { id: "good", seq: "GGGGG" + "AAAAACCCCC" + "ATGGCCAAA" + "TTTT" },
+    ]);
+    const result = await runPipeline({
+      sources: [makeSource("damaged.fastq", malformed + valid, 3)],
+      rounds: [ROUND],
+      settings: STRICT,
+      pseudocount: 0.5,
+      onLog: (event) => logs.push(event),
+    });
+    expect(result.unassignedBreakdown.malformed_fastq).toBe(1);
+    expect(result.globalUnassigned).toBe(1);
+    expect(result.stats.get("R0")!.passed_qc).toBe(1);
+    expect(JSON.parse(result.runStatsJson).unassigned_breakdown.malformed_fastq).toBe(1);
+    expect(logs.some((event) =>
+      event.tag === "warning" &&
+      event.text.includes("malformed=1")
+    )).toBe(true);
+  });
+
+  it("propagates source-open failures after logging the attempted source", async () => {
+    const logs: string[] = [];
+    const failing: IFastqSource = {
+      describe: () => ({ id: "broken", name: "broken.fastq", sizeBytes: null }),
+      open: async () => {
+        throw new Error("simulated Drive stream failure");
+      },
+    };
+    await expect(
+      runPipeline({
+        sources: [failing],
+        rounds: [ROUND],
+        settings: STRICT,
+        pseudocount: 0.5,
+        onLog: (event) => logs.push(event.text),
+      }),
+    ).rejects.toThrow(/simulated Drive stream failure/);
+    expect(logs.some((line) => line.includes("opening broken.fastq"))).toBe(true);
+    expect(logs.some((line) => line.startsWith("Total runtime"))).toBe(false);
+  });
+
+  it("reports an empty stream as a warning instead of a successful source", async () => {
+    const logs: Array<{ text: string; tag: string }> = [];
+    await runPipeline({
+      sources: [makeSource("empty.fastq", "")],
+      rounds: [ROUND],
+      settings: STRICT,
+      pseudocount: 0.5,
+      onLog: (event) => logs.push(event),
+    });
+    expect(logs.some((event) =>
+      event.tag === "warning" && event.text.includes("EMPTY FASTQ STREAM")
+    )).toBe(true);
+  });
+
+  it("stops cleanly when the run is cancelled before streaming", async () => {
+    const abort = new AbortController();
+    abort.abort(new Error("cancelled by test"));
+    await expect(
+      runPipeline({
+        sources: [makeSource("cancel.fastq", mkFastq([{ id: "r", seq: "ACGT" }]))],
+        rounds: [ROUND],
+        settings: STRICT,
+        pseudocount: 0.5,
+        signal: abort.signal,
+      }),
+    ).rejects.toThrow(/cancelled by test/);
+  });
+
+  it("rejects missing and invalid per-round source bindings instead of silently demultiplexing", async () => {
+    const source = makeSource("reads.fastq", mkFastq([{ id: "r", seq: "ACGT" }]));
+    const base = {
+      sources: [source],
+      rounds: [ROUND],
+      settings: STRICT,
+      pseudocount: 0.5,
+    };
+    await expect(
+      runPipeline({ ...base, sourceRoundIndices: [] }),
+    ).rejects.toThrow(/exactly one round binding/i);
+    await expect(
+      runPipeline({ ...base, sourceRoundIndices: [1] }),
+    ).rejects.toThrow(/invalid round binding/i);
+  });
+
+  it("rejects duplicate result keys and ambiguous multiplexed primer definitions", async () => {
+    const source = makeSource("reads.fastq", mkFastq([{ id: "r", seq: "ACGT" }]));
+    await expect(
+      runPipeline({
+        sources: [source],
+        rounds: [ROUND, { ...ROUND }],
+        settings: STRICT,
+        pseudocount: 0.5,
+      }),
+    ).rejects.toThrow(/names must be unique/i);
+    await expect(
+      runPipeline({
+        sources: [source],
+        rounds: [ROUND, { ...ROUND, name: "R1" }],
+        settings: STRICT,
+        pseudocount: 0.5,
+      }),
+    ).rejects.toThrow(/distinct forward primers/i);
+  });
 });

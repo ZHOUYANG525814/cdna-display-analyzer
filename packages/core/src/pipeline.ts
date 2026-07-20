@@ -17,7 +17,11 @@ import {
   type RoundStats,
   type UnassignedBreakdown,
 } from "./demultiplex.js";
-import { meanPhred, readFastqRecords } from "./fastq.js";
+import {
+  isValidFastqRecord,
+  meanPhred,
+  readFastqRecordsResilient,
+} from "./fastq.js";
 import { runAnalyzer, type AnalyzerOutput } from "./analyzer.js";
 import { createWasmScorer } from "./wasm.js";
 
@@ -91,6 +95,31 @@ async function* streamToAsyncIter(
 }
 
 export async function runPipeline(req: PipelineRequest): Promise<PipelineResult> {
+  if (req.sources.length === 0) {
+    throw new Error("At least one FASTQ source is required.");
+  }
+  if (req.rounds.length === 0) {
+    throw new Error("At least one selection round is required.");
+  }
+  if (new Set(req.rounds.map((round) => round.name)).size !== req.rounds.length) {
+    throw new Error("Selection round names must be unique.");
+  }
+  if (
+    !req.sourceRoundIndices &&
+    new Set(req.rounds.map((round) => round.fwPrimer)).size !== req.rounds.length
+  ) {
+    throw new Error("Multiplexed rounds must use distinct forward primers.");
+  }
+  if (req.sourceRoundIndices) {
+    if (req.sourceRoundIndices.length !== req.sources.length) {
+      throw new Error("Every per-round FASTQ source must have exactly one round binding.");
+    }
+    for (const [sourceIndex, roundIndex] of req.sourceRoundIndices.entries()) {
+      if (!Number.isInteger(roundIndex) || roundIndex < 0 || roundIndex >= req.rounds.length) {
+        throw new Error(`Source ${sourceIndex} has an invalid round binding.`);
+      }
+    }
+  }
   const t0 = performance.now();
   const log = (text: string, tag: PipelineLogEvent["tag"] = "info"): void => {
     req.onLog?.({ text, tag });
@@ -138,6 +167,9 @@ export async function runPipeline(req: PipelineRequest): Promise<PipelineResult>
     let recordsProcessed = 0;
     let lastReportedBytes = 0;
     const tSrc0 = performance.now();
+    const unassignedAtSourceStart = engine.globalUnassigned;
+    const malformedAtSourceStart =
+      engine.unassignedBreakdown.malformed_fastq ?? 0;
     // Filter-funnel log cadence: emit a running breakdown roughly every
     // 100k records so users see counters move during long runs.
     let lastLogRecord = 0;
@@ -184,18 +216,19 @@ export async function runPipeline(req: PipelineRequest): Promise<PipelineResult>
     // Per-round binding (when provided) skips cross-round competition. We
     // resolve the bound round index up-front so the hot inner loop just
     // branches on `boundRoundIdx === -1` rather than re-checking config.
-    const boundRoundIdx =
-      req.sourceRoundIndices && req.sourceRoundIndices.length === req.sources.length
-        ? req.sourceRoundIndices[srcIdx] ?? -1
-        : -1;
+    const boundRoundIdx = req.sourceRoundIndices
+      ? req.sourceRoundIndices[srcIdx]!
+      : -1;
 
     try {
-      for await (const rec of readFastqRecords(bytesIter)) {
+      for await (const rec of readFastqRecordsResilient(bytesIter)) {
         if (req.signal?.aborted) throw req.signal.reason ?? new Error("aborted");
 
-        // Q-score filter, identical to the Python pre-demultiplex check:
-        // mean Phred < threshold → drop and charge to low_quality bucket.
-        if (meanPhred(rec.qual) < req.settings.minMeanPhred) {
+        if (!isValidFastqRecord(rec)) {
+          engine.recordMalformedFastq();
+        } else if (meanPhred(rec.qual) < req.settings.minMeanPhred) {
+          // Q-score filter, identical to the Python pre-demultiplex check:
+          // mean Phred < threshold → drop and charge to low_quality bucket.
           engine.recordLowQuality();
         } else {
           // Grow scratch buffers if this read is larger than any seen so far.
@@ -267,6 +300,7 @@ export async function runPipeline(req: PipelineRequest): Promise<PipelineResult>
           const u = engine.unassignedBreakdown;
           log(
             `  …${(recordsProcessed / 1000).toFixed(0)}k reads · passed_qc=${passed}` +
+              ` · malformed=${u.malformed_fastq ?? 0}` +
               ` · lowQ=${u.low_quality} · noAnchor=${u.no_anchor}` +
               ` · ambig=${u.ambiguous} · bcMismatch=${u.barcode_mismatch}` +
               ` · trunc=${truncated} · indel=${lenIndel} · stop=${stop} · lowQcds=${lowQCds}`,
@@ -285,6 +319,17 @@ export async function runPipeline(req: PipelineRequest): Promise<PipelineResult>
     // totals: in per-round mode this corresponds to a single round's data;
     // in multiplexed mode this reflects everything seen so far.
     const dt = ((performance.now() - tSrc0) / 1000).toFixed(1);
+    const sourcePreRoundRejected =
+      engine.globalUnassigned - unassignedAtSourceStart;
+    const sourceMalformed =
+      (engine.unassignedBreakdown.malformed_fastq ?? 0) -
+      malformedAtSourceStart;
+    const sourceQcText =
+      ` · preRoundRejected=${sourcePreRoundRejected}` +
+      ` (malformed=${sourceMalformed})` +
+      (recordsProcessed === 0 ? " · EMPTY FASTQ STREAM" : "");
+    const sourceTag =
+      sourceMalformed > 0 || recordsProcessed === 0 ? "warning" : "success";
     if (boundRoundIdx >= 0) {
       // Per-round mode → the bound round's stats are this source's stats.
       const cfg = preprocessed[boundRoundIdx]!;
@@ -292,13 +337,15 @@ export async function runPipeline(req: PipelineRequest): Promise<PipelineResult>
       const counter = engine.dnaCounters.get(cfg.name)!;
       log(
         `  ${desc.name} done in ${dt}s · ${recordsProcessed} reads` +
-          ` · ${s.passed_qc} passed_qc · ${counter.size} unique CDS`,
-        "success",
+          ` · ${s.passed_qc} passed_qc · ${counter.size} unique CDS` +
+          sourceQcText,
+        sourceTag,
       );
     } else {
       log(
-        `  ${desc.name} done in ${dt}s · ${recordsProcessed} reads processed`,
-        "success",
+        `  ${desc.name} done in ${dt}s · ${recordsProcessed} reads processed` +
+          sourceQcText,
+        sourceTag,
       );
     }
   }

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   LineSplitter,
   bytesToAscii,
+  isValidFastqRecord,
   meanPhred,
   readFastqRecords,
   readFastqRecordsResilient,
@@ -91,6 +92,37 @@ describe("readFastqRecordsResilient — malformed input recovery", () => {
     const records = await collect(readFastqRecordsResilient(iter([bytesOf("@r\nACGT\n+\n@III\n")])));
     expect(records).toHaveLength(1);
     expect(bytesToAscii(records[0]!.qual)).toBe("@III");
+  });
+});
+
+describe("isValidFastqRecord", () => {
+  const record = (
+    header = "@read",
+    seq = "ACGTN",
+    separator = "+",
+    qual = "IIIII",
+  ): FastqRecord => ({
+    header: bytesOf(header),
+    seq: bytesOf(seq),
+    separator: bytesOf(separator),
+    qual: bytesOf(qual),
+  });
+
+  it("accepts upper/lowercase ACGTN and printable Phred+33", () => {
+    expect(isValidFastqRecord(record("@r", "aCgTn", "+r", "!I~I!"))).toBe(true);
+  });
+
+  it.each([
+    record("@", "ACGT", "+", "IIII"),
+    record("@ ", "ACGT", "+", "IIII"),
+    record("read", "ACGT", "+", "IIII"),
+    record("@r", "", "+", ""),
+    record("@r", "ACGX", "+", "IIII"),
+    record("@r", "ACGT", "not-plus", "IIII"),
+    record("@r", "ACGT", "+", "III"),
+    record("@r", "ACGT", "+", "III "),
+  ])("rejects malformed record %#", (value) => {
+    expect(isValidFastqRecord(value)).toBe(false);
   });
 });
 

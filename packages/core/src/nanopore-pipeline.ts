@@ -19,7 +19,10 @@ import {
   reverseInto,
   uppercaseInto,
 } from "./demultiplex.js";
-import { readFastqRecords } from "./fastq.js";
+import {
+  isValidFastqRecord,
+  readFastqRecordsResilient,
+} from "./fastq.js";
 import {
   DEFAULT_SETTINGS,
   NanoporeEngine,
@@ -127,6 +130,39 @@ async function* streamToAsyncIter(
 export async function runNanoporePipeline(
   req: NanoporePipelineRequest,
 ): Promise<NanoporePipelineResult> {
+  if (req.sources.length === 0) {
+    throw new Error("At least one FASTQ source is required.");
+  }
+  if (req.sites.length === 0) {
+    throw new Error("At least one SSM site is required.");
+  }
+  if (req.rounds.length === 0) {
+    throw new Error("At least one selection round is required.");
+  }
+  if (new Set(req.sites.map((site) => site.name)).size !== req.sites.length) {
+    throw new Error("SSM site names must be unique.");
+  }
+  if (new Set(req.rounds.map((round) => round.name)).size !== req.rounds.length) {
+    throw new Error("Selection round names must be unique.");
+  }
+  if (req.sourceRoundIndices) {
+    if (req.sourceRoundIndices.length !== req.sources.length) {
+      throw new Error("Every per-round FASTQ source must have exactly one round binding.");
+    }
+    for (const [sourceIndex, roundIndex] of req.sourceRoundIndices.entries()) {
+      if (!Number.isInteger(roundIndex) || roundIndex < 0 || roundIndex >= req.rounds.length) {
+        throw new Error(`Source ${sourceIndex} has an invalid round binding.`);
+      }
+    }
+  } else {
+    const barcodes = req.rounds.map((round) => round.barcode ?? "");
+    if (barcodes.some((barcode) => barcode.length === 0)) {
+      throw new Error("Every multiplexed round must define a barcode.");
+    }
+    if (new Set(barcodes).size !== barcodes.length) {
+      throw new Error("Multiplexed rounds must use distinct barcodes.");
+    }
+  }
   const t0 = performance.now();
   const log = (text: string, tag: NanoporeLogEvent["tag"] = "info"): void => {
     req.onLog?.({ text, tag });
@@ -197,6 +233,7 @@ export async function runNanoporePipeline(
       let recordsProcessed = 0;
       let lastReportedBytes = 0;
       let lastLogRecord = 0;
+      const malformedAtSourceStart = engine.globalBreakdown.malformed_fastq;
       const LOG_EVERY = 100_000;
       let upScratch = new Uint8Array(256);
       let upQualScratch = new Uint8Array(256);
@@ -223,40 +260,41 @@ export async function runNanoporePipeline(
         }
       });
 
-      const boundRoundIdx =
-        req.sourceRoundIndices && req.sourceRoundIndices.length === req.sources.length
-          ? req.sourceRoundIndices[srcIdx] ?? -1
-          : -1;
+      const boundRoundIdx = req.sourceRoundIndices
+        ? req.sourceRoundIndices[srcIdx]!
+        : -1;
 
       try {
-        for await (const rec of readFastqRecords(bytesIter)) {
+        for await (const rec of readFastqRecordsResilient(bytesIter)) {
           if (req.signal?.aborted) throw req.signal.reason ?? new Error("aborted");
 
-          if (rec.seq.length > upScratch.length) {
-            upScratch = new Uint8Array(rec.seq.length);
-            upQualScratch = new Uint8Array(rec.seq.length);
-            rcScratch = new Uint8Array(rec.seq.length);
-            rcQualScratch = new Uint8Array(rec.seq.length);
-          }
+          if (!isValidFastqRecord(rec)) {
+            engine.recordMalformedFastq();
+          } else {
+            if (rec.seq.length > upScratch.length) {
+              upScratch = new Uint8Array(rec.seq.length);
+              upQualScratch = new Uint8Array(rec.seq.length);
+              rcScratch = new Uint8Array(rec.seq.length);
+              rcQualScratch = new Uint8Array(rec.seq.length);
+            }
 
-          const upSeq = uppercaseInto(rec.seq, upScratch);
-          const upQual = rec.qual.length === rec.seq.length
-            ? copyInto(rec.qual, upQualScratch)
-            : rec.qual;
+            const upSeq = uppercaseInto(rec.seq, upScratch);
+            const upQual = copyInto(rec.qual, upQualScratch);
 
-          let outcome =
-            boundRoundIdx >= 0
-              ? engine.processReadForRound(upSeq, upQual, boundRoundIdx)
-              : engine.processRead(upSeq, upQual);
-          if (outcome !== "assigned" && outcome !== "low_quality_read") {
-            // Low quality is final — RC won't fix bad chemistry. Anything
-            // else (no_anchor / barcode_mismatch) might just be antisense.
-            const rcBytes = rcInto(upSeq, rcScratch);
-            const rcQual = reverseInto(upQual, rcQualScratch);
-            outcome =
+            let outcome =
               boundRoundIdx >= 0
-                ? engine.processReadForRound(rcBytes, rcQual, boundRoundIdx)
-                : engine.processRead(rcBytes, rcQual);
+                ? engine.processReadForRound(upSeq, upQual, boundRoundIdx)
+                : engine.processRead(upSeq, upQual);
+            if (outcome !== "assigned" && outcome !== "low_quality_read") {
+              // Low quality is final — RC won't fix bad chemistry. Anything
+              // else (no_anchor / barcode_mismatch) might just be antisense.
+              const rcBytes = rcInto(upSeq, rcScratch);
+              const rcQual = reverseInto(upQual, rcQualScratch);
+              outcome =
+                boundRoundIdx >= 0
+                  ? engine.processReadForRound(rcBytes, rcQual, boundRoundIdx)
+                  : engine.processRead(rcBytes, rcQual);
+            }
           }
 
           recordsProcessed++;
@@ -288,6 +326,7 @@ export async function runNanoporePipeline(
             }
             log(
               `  …${(recordsProcessed / 1000).toFixed(0)}k reads · passed=${passed}` +
+                ` · malformed=${gb.malformed_fastq}` +
                 ` · lowQ=${gb.low_quality_read} · bcMiss=${gb.barcode_mismatch}` +
                 ` · noSite=${gb.no_site_extracted}` +
                 ` · anchorOk=${anchorFound} · roiIndel=${roiIndel} · lowQroi=${lowQRoi}`,
@@ -306,6 +345,13 @@ export async function runNanoporePipeline(
       // Per-source completion summary (Phase 6.13). Reuses the boundRoundIdx
       // computed before the read loop above.
       const dt = ((performance.now() - tSrc0) / 1000).toFixed(1);
+      const sourceMalformed =
+        engine.globalBreakdown.malformed_fastq - malformedAtSourceStart;
+      const sourceQcText =
+        ` · malformed=${sourceMalformed}` +
+        (recordsProcessed === 0 ? " · EMPTY FASTQ STREAM" : "");
+      const sourceTag =
+        sourceMalformed > 0 || recordsProcessed === 0 ? "warning" : "success";
       if (boundRoundIdx >= 0) {
         const roundName = rounds[boundRoundIdx]?.name ?? "?";
         const stats = engine.stats.get(roundName);
@@ -314,14 +360,16 @@ export async function runNanoporePipeline(
           const totalPassed = sitePassed.reduce((a, b) => a + b, 0);
           log(
             `  ${desc.name} done in ${dt}s · ${recordsProcessed} reads` +
-              ` · ${totalPassed} site-passes across ${sitePassed.length} site(s)`,
-            "success",
+              ` · ${totalPassed} site-passes across ${sitePassed.length} site(s)` +
+              sourceQcText,
+            sourceTag,
           );
         }
       } else {
         log(
-          `  ${desc.name} done in ${dt}s · ${recordsProcessed} reads processed`,
-          "success",
+          `  ${desc.name} done in ${dt}s · ${recordsProcessed} reads processed` +
+            sourceQcText,
+          sourceTag,
         );
       }
     }

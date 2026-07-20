@@ -122,6 +122,12 @@ function ResultsLoaded({
         <StatCard label="Sites" value={String(outcome.siteNames.length)} />
         <StatCard label="Unique variants (top 200/site)" value={uniqueVariants.toLocaleString()} />
       </div>
+      <div className="flex flex-wrap gap-2 text-xs">
+        <Badge variant="outline">malformed_fastq {outcome.globalBreakdown.malformed_fastq.toLocaleString()}</Badge>
+        <Badge variant="outline">low_quality_read {outcome.globalBreakdown.low_quality_read.toLocaleString()}</Badge>
+        <Badge variant="outline">barcode_mismatch {outcome.globalBreakdown.barcode_mismatch.toLocaleString()}</Badge>
+        <Badge variant="outline">no_site_extracted {outcome.globalBreakdown.no_site_extracted.toLocaleString()}</Badge>
+      </div>
 
       <Card>
         <CardHeader>

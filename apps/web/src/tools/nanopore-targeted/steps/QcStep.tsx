@@ -15,7 +15,12 @@ const FIELDS: Array<{ key: EditableKey; label: string; min: number; max: number;
 export function QcStep() {
   const s = useTargetedNanoporeStore();
   const combinationRequired = s.sites.length >= 2;
-  const valid = FIELDS.every(({ key, min, max }) => Number.isFinite(s.settings[key]) && s.settings[key] >= min && s.settings[key] <= max);
+  const valid = FIELDS.every(({ key, min, max }) =>
+    Number.isFinite(s.settings[key]) &&
+    s.settings[key] >= min &&
+    s.settings[key] <= max &&
+    (key !== "minInputCountToScore" || Number.isInteger(s.settings[key]))
+  );
   return <div className="space-y-6">
     <Card><CardHeader><CardTitle>QC parameters</CardTitle><CardDescription>Recommended defaults are marked, but every study-level value remains editable. Structural safeguards are versioned and fixed for reproducibility.</CardDescription></CardHeader>
       <CardContent className="grid gap-4 sm:grid-cols-2">{FIELDS.map((field) => {
@@ -42,7 +47,7 @@ export function QcStep() {
       <p>7. Every amino-acid state—including the reference state—gets log₂((RPM round + p)/(RPM Round 0 + p)). The RPM pseudocount is converted to an equivalent per-library read pseudocount for four-term Poisson variance; two-sided p and per-target BH-FDR use that same model.</p>
     </CardContent></Card>
     <label className="flex items-start gap-2 rounded-md border p-3 text-sm"><input className="mt-1" type="checkbox" disabled checked={combinationRequired} readOnly /><span><strong>Report target-combination enrichment</strong> <span className="ml-1 rounded-full bg-primary/10 px-2 py-0.5 text-[10px] text-primary">{combinationRequired ? "Required for 2+ targets" : "Not applicable to one target"}</span><span className="mt-1 block text-xs text-muted-foreground">Concatenates target amino acids in confirmed target order. Uses full-QC reads with every target callable; partial rescued calls never create linkage.</span></span></label>
-    <div className="flex justify-between"><Button variant="outline" onClick={() => s.setStep("inputs")}>Back</Button><Button disabled={!valid} onClick={() => { if (combinationRequired) s.setReportHaplotypes(true); s.setQcLocked(true); s.setStep("run"); }}>Lock QC and continue</Button></div>
+    <div className="flex justify-between"><Button variant="outline" onClick={() => s.setStep("inputs")}>Back</Button><Button disabled={!valid} onClick={() => { s.setReportHaplotypes(combinationRequired); s.setQcLocked(true); s.setStep("run"); }}>Lock QC and continue</Button></div>
   </div>;
 }
 

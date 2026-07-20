@@ -87,4 +87,131 @@ describe("runTargetedNanoporePipeline", () => {
     expect(result.stats.get("Round 0")!.primary_drop_reasons.malformed_fastq).toBe(1);
     expect(result.stats.get("Round 0")!.full_qc_passed).toBe(1);
   });
+
+  it.each([
+    ["missing separator", `@bad qs:f:20\n${REF}\nnot-plus\n${Q}\n`],
+    ["truncated record", `@bad qs:f:20\n${REF}\n+\n`],
+    ["invalid base", record("bad", `${REF.slice(0, 5)}X${REF.slice(6)}`)],
+    ["quality length mismatch", record("bad", REF, Q.slice(1))],
+    ["invalid quality byte", record("bad", REF, `${Q.slice(1)} `)],
+    ["empty read ID", `@\n${REF}\n+\n${Q}\n`],
+    ["junk before header", "not-a-header\njunk\n"],
+  ])("isolates %s and still analyzes the following record", async (_label, malformed) => {
+    const result = await runTargetedNanoporePipeline({
+      sources: [
+        new MemoryFastq("r0.fastq", malformed + record("good0", REF)),
+        new MemoryFastq("r1.fastq", record("good1", REF)),
+      ],
+      sourceRoundIndices: [0, 1],
+      roundNames: ["Round 0", "Round 1"],
+      reference: REF,
+      sites: [{ name: "site_01", ntStart: TARGET, length: 3, design: "ANY" }],
+      settings: {
+        minReadQ: 10,
+        minReferenceCoverage: 0.9,
+        minAlignmentIdentity: 0.85,
+        minProtectedIdentity: 0.95,
+        maxProtectedIndelBases: 30,
+        minTargetBaseQ: 15,
+        minInputCountToScore: 1,
+        pseudocount: 0.5,
+        reportHaplotypes: false,
+      },
+    });
+    expect(result.stats.get("Round 0")!.primary_drop_reasons.malformed_fastq).toBe(1);
+    expect(result.stats.get("Round 0")!.full_qc_passed).toBe(1);
+    expect(result.stats.get("Round 1")!.full_qc_passed).toBe(1);
+  });
+
+  it("propagates source-open failures after emitting a source-start log", async () => {
+    const logs: string[] = [];
+    const failing: IFastqSource = {
+      describe: () => ({ id: "broken", name: "broken.fastq", sizeBytes: null }),
+      open: async () => {
+        throw new Error("simulated Drive stream failure");
+      },
+    };
+    await expect(
+      runTargetedNanoporePipeline({
+        sources: [failing, new MemoryFastq("r1.fastq", record("good", REF))],
+        sourceRoundIndices: [0, 1],
+        roundNames: ["Round 0", "Round 1"],
+        reference: REF,
+        sites: [{ name: "site_01", ntStart: TARGET, length: 3, design: "ANY" }],
+        settings: {
+          minReadQ: 10,
+          minReferenceCoverage: 0.9,
+          minAlignmentIdentity: 0.85,
+          minProtectedIdentity: 0.95,
+          maxProtectedIndelBases: 30,
+          minTargetBaseQ: 15,
+          minInputCountToScore: 1,
+          pseudocount: 0.5,
+          reportHaplotypes: false,
+        },
+        onLog: (event) => logs.push(event.text),
+      }),
+    ).rejects.toThrow(/simulated Drive stream failure/);
+    expect(logs.some((line) => line.includes("broken.fastq") && line.includes("started"))).toBe(true);
+    expect(logs.some((line) => line.startsWith("Pipeline complete"))).toBe(false);
+  });
+
+  it("reports an empty shard as a warning while continuing other sources", async () => {
+    const logs: Array<{ text: string; tag: string }> = [];
+    const result = await runTargetedNanoporePipeline({
+      sources: [
+        new MemoryFastq("empty.fastq", ""),
+        new MemoryFastq("round1.fastq", record("good", REF)),
+      ],
+      sourceRoundIndices: [0, 1],
+      roundNames: ["Round 0", "Round 1"],
+      reference: REF,
+      sites: [{ name: "site_01", ntStart: TARGET, length: 3, design: "ANY" }],
+      settings: {
+        minReadQ: 10,
+        minReferenceCoverage: 0.9,
+        minAlignmentIdentity: 0.85,
+        minProtectedIdentity: 0.95,
+        maxProtectedIndelBases: 30,
+        minTargetBaseQ: 15,
+        minInputCountToScore: 1,
+        pseudocount: 0.5,
+        reportHaplotypes: false,
+      },
+      onLog: (event) => logs.push(event),
+    });
+    expect(result.stats.get("Round 1")!.full_qc_passed).toBe(1);
+    expect(logs.some((event) =>
+      event.tag === "warning" && event.text.includes("EMPTY FASTQ STREAM")
+    )).toBe(true);
+  });
+
+  it("stops cleanly when cancelled before the first stream read", async () => {
+    const abort = new AbortController();
+    abort.abort(new Error("cancelled by test"));
+    await expect(
+      runTargetedNanoporePipeline({
+        sources: [
+          new MemoryFastq("r0.fastq", record("r0", REF)),
+          new MemoryFastq("r1.fastq", record("r1", REF)),
+        ],
+        sourceRoundIndices: [0, 1],
+        roundNames: ["Round 0", "Round 1"],
+        reference: REF,
+        sites: [{ name: "site_01", ntStart: TARGET, length: 3, design: "ANY" }],
+        settings: {
+          minReadQ: 10,
+          minReferenceCoverage: 0.9,
+          minAlignmentIdentity: 0.85,
+          minProtectedIdentity: 0.95,
+          maxProtectedIndelBases: 30,
+          minTargetBaseQ: 15,
+          minInputCountToScore: 1,
+          pseudocount: 0.5,
+          reportHaplotypes: false,
+        },
+        signal: abort.signal,
+      }),
+    ).rejects.toThrow(/cancelled by test/);
+  });
 });

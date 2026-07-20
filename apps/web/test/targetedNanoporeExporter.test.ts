@@ -79,6 +79,67 @@ describe("targeted Nanopore result artifacts", () => {
     };
     expect(() => parseLockedConfig(JSON.stringify(withBadName))).toThrow(/filename|Round 0/i);
   });
+  it("rejects malformed JSON and invalid locked values before state mutation", () => {
+    const locked = buildLockedConfig(snapshot);
+    expect(() => parseLockedConfig("{")).toThrow(/JSON/i);
+    expect(() => parseLockedConfig("[]")).toThrow(/object/i);
+    const invalid: Array<[string, unknown]> = [
+      ["model", { ...locked, calculationModel: "counts" }],
+      ["unit", { ...locked, pseudocountUnit: "count" }],
+      ["project", { ...locked, project: "<script>" }],
+      ["reference", { ...locked, reference: "ACGTX".repeat(20) }],
+      ["CDS strand", { ...locked, cds: { ...locked.cds, strand: "?" } }],
+      ["CDS frame", { ...locked, cds: { ...locked.cds, end1: 59 } }],
+      ["targets", { ...locked, targets: [] }],
+      ["target design", {
+        ...locked,
+        targets: [{ ...locked.targets[0], design: "ANY" }],
+      }],
+      ["round sequence", {
+        ...locked,
+        rounds: [{ ...locked.rounds[0], round: 1 }, locked.rounds[1]],
+      }],
+      ["round filename suffix", {
+        ...locked,
+        rounds: [{ round: 0, expectedFileNames: ["reads.txt"] }, locked.rounds[1]],
+      }],
+      ["read Q", {
+        ...locked,
+        settings: { ...locked.settings, minReadQ: 31 },
+      }],
+      ["zero pseudocount", {
+        ...locked,
+        settings: { ...locked.settings, pseudocount: 0 },
+      }],
+      ["report flag", {
+        ...locked,
+        settings: { ...locked.settings, reportHaplotypes: "yes" },
+      }],
+      ["enabled inapplicable combinations", {
+        ...locked,
+        settings: { ...locked.settings, reportHaplotypes: true },
+      }],
+      ["disabled required combinations", {
+        ...locked,
+        targets: [
+          locked.targets[0],
+          { ...locked.targets[0], name: "A2", ntStart: 4 },
+        ],
+        settings: { ...locked.settings, reportHaplotypes: false },
+      }],
+      ["rescue flank", {
+        ...locked,
+        settings: { ...locked.settings, rescueFlankBases: 29 },
+      }],
+      ["concatemer safeguard", {
+        ...locked,
+        fixedSafeguards: { concatemerLengthRatio: 2 },
+      }],
+    ];
+    for (const [label, value] of invalid) {
+      expect(() => parseLockedConfig(JSON.stringify(value)), label).toThrow();
+    }
+  });
   it("exports exclusive and target-specific QC without dropping reason columns", () => {
     expect(buildFilterFunnelCsv(outcome)).toContain("low_alignment_identity");
     expect(buildSiteCallabilityCsv(outcome)).toContain("Target_Indel");

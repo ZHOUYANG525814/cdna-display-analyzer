@@ -16,6 +16,43 @@ export interface FastqRecord {
   qual: Uint8Array;
 }
 
+/** Strict record-level validation shared by the NGS and targeted Nanopore
+ * pipelines. The resilient reader handles framing recovery; this function
+ * decides whether a framed/partial record is safe to analyze. */
+export function isValidFastqRecord(record: FastqRecord): boolean {
+  if (
+    record.header.length < 2 ||
+    record.header[0] !== 0x40 ||
+    record.header[1] === 0x20 ||
+    record.header[1] === 0x09 ||
+    record.separator[0] !== 0x2b ||
+    record.seq.length === 0 ||
+    record.seq.length !== record.qual.length
+  ) {
+    return false;
+  }
+  for (let index = 1; index < record.header.length; index++) {
+    const byte = record.header[index]!;
+    if (byte !== 0x09 && (byte < 32 || byte > 126)) return false;
+  }
+  for (const byte of record.seq) {
+    const upper = byte >= 0x61 && byte <= 0x7a ? byte - 0x20 : byte;
+    if (
+      upper !== 0x41 &&
+      upper !== 0x43 &&
+      upper !== 0x47 &&
+      upper !== 0x54 &&
+      upper !== 0x4e
+    ) {
+      return false;
+    }
+  }
+  for (const byte of record.qual) {
+    if (byte < 33 || byte > 126) return false;
+  }
+  return true;
+}
+
 // Byte-first line splitter. Maintains a carry buffer to stitch lines across
 // arbitrary chunk boundaries (TCP framing breaks streams at any byte offset,
 // not at \n). Emitted line views drop trailing CR + LF to match Python's

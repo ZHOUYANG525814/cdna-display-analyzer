@@ -6,6 +6,7 @@
 
 import { create } from "zustand";
 import type { DriveFileRef, PipelineOutcome, PipelineProgressMsg } from "../worker/types";
+import { LIMITS } from "../lib/validation";
 export type { DriveFileRef };
 
 // Steps are referenced by string id so the store stays tool-agnostic. The
@@ -223,8 +224,20 @@ export const useRunStore = create<RunState>((set, get) => ({
   },
 
   setProjectName: (v) => set({ projectName: v }),
-  setLocalFiles: (files) => set({ localFiles: files }),
-  setDriveFiles: (files) => set({ driveFiles: files }),
+  setLocalFiles: (files) =>
+    set({
+      localFiles: files.slice(
+        0,
+        Math.max(0, LIMITS.FASTQ_FILES_MAX - get().driveFiles.length),
+      ),
+    }),
+  setDriveFiles: (files) =>
+    set({
+      driveFiles: files.slice(
+        0,
+        Math.max(0, LIMITS.FASTQ_FILES_MAX - get().localFiles.length),
+      ),
+    }),
   clearAllFiles: () => set({ localFiles: [], driveFiles: [] }),
 
   setReferenceSeq: (v) => set({ referenceSeq: v.toUpperCase().replace(/[^ACGTN]/g, "") }),
@@ -232,9 +245,11 @@ export const useRunStore = create<RunState>((set, get) => ({
   updateRound: (id, patch) =>
     set({ rounds: get().rounds.map((r) => (r.id === id ? { ...r, ...patch } : r)) }),
   addRound: () =>
-    set({
-      rounds: [...get().rounds, defaultRound(get().rounds.length)],
-    }),
+    get().rounds.length < LIMITS.ROUND_COUNT_MAX
+      ? set({
+          rounds: [...get().rounds, defaultRound(get().rounds.length)],
+        })
+      : undefined,
   removeRound: (id) => set({ rounds: get().rounds.filter((r) => r.id !== id) }),
   setAdaptive: (v) => set({ adaptive: v }),
   setFilterStop: (v) => set({ filterStop: v }),

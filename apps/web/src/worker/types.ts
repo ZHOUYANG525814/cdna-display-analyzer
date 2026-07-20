@@ -177,8 +177,8 @@ export interface TargetedNanoporeOutcome {
   /** Complete per-site AA table is bounded by sites × genetic-code states
    * (~21 each), so it is safe and useful for charts without reparsing CSV. */
   perSiteRowsForViz: NanoporeAnalyzerRow[];
-  /** Lossless DNA-level aggregates are folded into run_stats.json so the
-   * browser exposes only the same three artifacts as the NGS workflow. */
+  /** Lossless DNA-level aggregates are folded into run_stats.json instead of
+   * being exposed as additional standalone downloads. */
   exactCodonCounts: Record<string, Record<string, Record<string, number>>>;
   exactHaplotypeCounts: Record<string, Record<string, number>>;
   haplotypeStatistics: NanoporeAnalyzerRow[];

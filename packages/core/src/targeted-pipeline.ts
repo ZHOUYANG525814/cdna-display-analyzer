@@ -1,6 +1,6 @@
 import type { IFastqSource } from "@cdna/types";
 import { rcInto, reverseInto, uppercaseInto } from "./demultiplex.js";
-import { readFastqRecordsResilient } from "./fastq.js";
+import { isValidFastqRecord, readFastqRecordsResilient } from "./fastq.js";
 import { runNanoporeAnalyzer, type NanoporeAnalyzerOutput } from "./nanopore-analyzer.js";
 import { serializeCsv, type AnalyzerRow, type ColumnSpec, type RowValue } from "./analyzer.js";
 import { translateDna } from "./dna.js";
@@ -96,7 +96,9 @@ export async function runTargetedNanoporePipeline(req: TargetedPipelineRequest):
     `Settings · reference=${refString.length} nt · rounds=${req.roundNames.length} · ` +
       `targets=${sites.length} · minReadQ=${req.settings.minReadQ} · ` +
       `coverage≥${req.settings.minReferenceCoverage} · alignmentIdentity≥${req.settings.minAlignmentIdentity} · ` +
-      `protectedIdentity≥${req.settings.minProtectedIdentity} · targetBaseQ≥${req.settings.minTargetBaseQ}`,
+      `protectedIdentity≥${req.settings.minProtectedIdentity} · protectedIndels≤${req.settings.maxProtectedIndelBases} nt · ` +
+      `targetBaseQ≥${req.settings.minTargetBaseQ} · rescueFlank=${req.settings.rescueFlankBases ?? 30} nt · ` +
+      `combinations=${req.settings.reportHaplotypes ? "on" : "off"} · concatemerRatio=1.5`,
   );
   log(
     `Statistics · enrichment=log2((RPM_round+p)/(RPM_Round0+p)) · p=${req.settings.pseudocount} RPM · ` +
@@ -233,8 +235,12 @@ export async function runTargetedNanoporePipeline(req: TargetedPipelineRequest):
       `Source ${sourceIndex + 1}/${req.sources.length} complete · ${desc.name} · ` +
         `reads=${perFile.totalReads.toLocaleString()} · aligned=${perFile.aligned.toLocaleString()} · ` +
         `fullQC=${perFile.fullQcPassed.toLocaleString()} · rescuedCalls=${perFile.rescuedSiteCalls.toLocaleString()} · ` +
-        `drops=${drops || "none"} · ${elapsed(sourceStartedAt)}`,
-      "success",
+        `drops=${drops || "none"}` +
+        (perFile.totalReads === 0 ? " · EMPTY FASTQ STREAM" : "") +
+        ` · ${elapsed(sourceStartedAt)}`,
+      perFile.primaryDropReasons.malformed_fastq > 0 || perFile.totalReads === 0
+        ? "warning"
+        : "success",
     );
   }
   log("Counting complete; calculating amino-acid enrichment, variance, p-values and BH-FDR.");
@@ -369,15 +375,6 @@ function primaryFailure(f: ReadonlyArray<TargetedQcFailure>): TargetedQcFailure 
   return (["low_read_q", "partial_reference", "low_alignment_identity", "low_protected_identity", "protected_indel"] as TargetedQcFailure[]).find((x) => f.includes(x)) ?? "low_protected_identity";
 }
 function bump<T extends string>(record: Record<T, number>, key: T): void { record[key] = (record[key] ?? 0) + 1; }
-function isValidFastqRecord(rec: { header: Uint8Array; seq: Uint8Array; separator: Uint8Array; qual: Uint8Array }): boolean {
-  if (rec.header[0] !== 64 || rec.separator[0] !== 43 || rec.seq.length === 0 || rec.seq.length !== rec.qual.length) return false;
-  for (const b of rec.seq) {
-    const u = b >= 97 && b <= 122 ? b - 32 : b;
-    if (u !== 65 && u !== 67 && u !== 71 && u !== 84 && u !== 78) return false;
-  }
-  for (const q of rec.qual) if (q < 33 || q > 126) return false;
-  return true;
-}
 function emptyDropReasons(): Record<TargetedPrimaryDropReason, number> { return { low_read_q: 0, partial_reference: 0, low_alignment_identity: 0, low_protected_identity: 0, protected_indel: 0, alignment_failed: 0, duplicate_read_id: 0, concatemer_or_chimera: 0, malformed_fastq: 0 }; }
 function emptyFileStats(name: string, round: string): TargetedFileStats { return { name, round, totalReads: 0, duplicateReadIds: 0, aligned: 0, fullQcPassed: 0, rescuedSiteCalls: 0, primaryDropReasons: emptyDropReasons() }; }
 function emptyRoundStats(sites: ReadonlyArray<ResolvedTargetSite>): TargetedRoundRunStats {

@@ -207,6 +207,7 @@ export function ResultsStep() {
           </div>
           <div className="mt-4 flex flex-wrap gap-3 text-xs">
             <Badge variant="outline">Unassigned: {outcome.globalUnassigned.toLocaleString()}</Badge>
+            <Badge variant="outline">malformed_fastq {(outcome.unassignedBreakdown.malformed_fastq ?? 0).toLocaleString()}</Badge>
             <Badge variant="outline">low_quality {outcome.unassignedBreakdown.low_quality.toLocaleString()}</Badge>
             <Badge variant="outline">no_anchor {outcome.unassignedBreakdown.no_anchor.toLocaleString()}</Badge>
             <Badge variant="outline">ambiguous {outcome.unassignedBreakdown.ambiguous.toLocaleString()}</Badge>

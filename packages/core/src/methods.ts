@@ -109,7 +109,7 @@ export const CDNA_METHODS: MethodsDocument = {
           summary: "Reads passing every QC filter that translate to this peptide in round <r>.",
           notes: [
             "This is the raw data. Every other numeric column derives from it.",
-            "Filter chain: mean read Phred ≥ threshold → Fw anchor exact 10-bp match → barcode score ≤ 1.0 → ambiguity margin ≥ 1.0 → CDS slice in-bounds → CDS-region mean Phred ≥ threshold → frame check → stop check (if enabled).",
+            "Filter chain: valid FASTQ record → mean read Phred ≥ threshold → Fw anchor exact 10-bp match → barcode score ≤ 1.0 → ambiguity margin ≥ 1.0 → CDS slice in-bounds → CDS-region mean Phred ≥ threshold → frame check → stop check (if enabled). Malformed records enter their own pre-round rejection bucket.",
           ],
         },
         {
@@ -275,7 +275,7 @@ export const NANOPORE_METHODS: MethodsDocument = {
           summary:
             "Reads passing every Nanopore-side QC filter that extract this exact ROI sequence at this site in round <r>.",
           notes: [
-            "Filter chain: mean read Phred ≥ minMeanPhredRead → both anchors located by banded align (subs ≤ maxAnchorSubs, indels ≤ maxAnchorIndels) → ROI length == expected (no Nanopore indels in the variable region) → mean ROI Phred ≥ minMeanPhredRoi → frame check → stop check (if enabled).",
+            "Filter chain: valid FASTQ record → mean read Phred ≥ minMeanPhredRead → both anchors located by banded align (subs ≤ maxAnchorSubs, indels ≤ maxAnchorIndels) → ROI length == expected (no Nanopore indels in the variable region) → mean ROI Phred ≥ minMeanPhredRoi → frame check → stop check (if enabled). Malformed records are isolated in globalBreakdown.malformed_fastq.",
           ],
         },
         {

@@ -15,6 +15,7 @@ import {
   LIMITS,
   peekFastq,
   sanitizeProjectName,
+  validateDriveFastqRef,
   validateFastqFileSync,
   validateProjectName,
 } from "@/lib/validation";
@@ -79,6 +80,12 @@ export function SourcesStep() {
     const warnings: string[] = [];
     const accepted: File[] = [];
     for (const f of Array.from(list)) {
+      if (accepted.length >= LIMITS.FASTQ_FILES_MAX - totalFiles) {
+        warnings.push(
+          `${f.name}: run limit is ${LIMITS.FASTQ_FILES_MAX.toLocaleString()} FASTQ files.`,
+        );
+        continue;
+      }
       const sync = validateFastqFileSync(f);
       if (!sync.ok) {
         warnings.push(`${f.name}: ${sync.reason}`);
@@ -105,8 +112,8 @@ export function SourcesStep() {
     setDemoErr(null);
     try {
       const file = await loadDemoFastq();
-      setLocalFiles([file]);
       setDriveFiles([]);
+      setLocalFiles([file]);
       useRunStore.setState({ expectedFileNames: [] });
       setProjectName("test_ngs_demo");
       setReferenceSeq(DEMO_REFERENCE);
@@ -356,7 +363,11 @@ export function SourcesStep() {
             </TabsContent>
 
             <TabsContent value="drive">
-              <DriveTabContent setDriveFiles={setDriveFiles} driveFileCount={driveFiles.length} />
+              <DriveTabContent
+                setDriveFiles={setDriveFiles}
+                driveFileCount={driveFiles.length}
+                otherFileCount={localFiles.length}
+              />
             </TabsContent>
           </Tabs>
 
@@ -425,7 +436,10 @@ export function SourcesStep() {
       <div className="flex justify-end">
         <Button
           size="lg"
-          disabled={!perRound && totalFiles === 0}
+          disabled={
+            validateProjectName(projectName) != null ||
+            (!perRound && totalFiles === 0)
+          }
           onClick={goNext}
         >
           Continue <ArrowRight className="ml-1.5 h-4 w-4" />
@@ -438,10 +452,13 @@ export function SourcesStep() {
 function DriveTabContent({
   setDriveFiles,
   driveFileCount,
+  otherFileCount = 0,
   signInOnly = false,
 }: {
   setDriveFiles: (f: import("@/worker/types").DriveFileRef[]) => void;
   driveFileCount: number;
+  /** Files already selected through the other source channel. */
+  otherFileCount?: number;
   /** When true, omit the picker affordance and only surface the sign-in
    *  button. Used by the per-round mode Sources card to pre-authenticate
    *  the user without forcing them to pick anything yet. */
@@ -522,7 +539,29 @@ VITE_GOOGLE_API_KEY=…`}
       });
       console.log(`[drive] Picker closed; picked ${picked.length} file(s)`, picked);
       if (picked.length > 0) {
-        setDriveFiles(picked.map((p) => ({ id: p.id, name: p.name, sizeBytes: p.sizeBytes })));
+        const accepted = picked
+          .map((file) => ({
+            id: file.id,
+            name: file.name,
+            sizeBytes: file.sizeBytes,
+          }))
+          .filter((file) => {
+            const check = validateDriveFastqRef(file);
+            if (!check.ok) {
+              setError(`${file.name || "(unnamed file)"}: ${check.reason}`);
+              return false;
+            }
+            return true;
+          });
+        const slots = Math.max(0, LIMITS.FASTQ_FILES_MAX - otherFileCount);
+        if (accepted.length > slots) {
+          setError(
+            `Run limit is ${LIMITS.FASTQ_FILES_MAX.toLocaleString()} FASTQ files; excess Drive selections were rejected.`,
+          );
+        }
+        if (slots > 0 && accepted.length > 0) {
+          setDriveFiles(accepted.slice(0, slots));
+        }
       }
     } catch (e: unknown) {
       console.error("[drive] picker failed:", e);

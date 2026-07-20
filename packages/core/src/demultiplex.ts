@@ -65,6 +65,9 @@ export interface UnassignedBreakdown {
   no_anchor: number;
   ambiguous: number;
   barcode_mismatch: number;
+  /** Present only when corruption is observed, preserving byte-parity of
+   * valid legacy run_stats while making damaged FASTQ records explicit. */
+  malformed_fastq?: number;
 }
 
 const ASCII_ENC = new TextEncoder();
@@ -362,6 +365,12 @@ export class DemultiplexEngine {
   recordLowQuality(): void {
     this.globalUnassigned++;
     this.unassignedBreakdown.low_quality++;
+  }
+
+  recordMalformedFastq(): void {
+    this.globalUnassigned++;
+    this.unassignedBreakdown.malformed_fastq =
+      (this.unassignedBreakdown.malformed_fastq ?? 0) + 1;
   }
 
   recordUnassigned(reason: ProcessResult): void {

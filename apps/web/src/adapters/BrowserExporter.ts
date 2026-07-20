@@ -8,8 +8,8 @@
 //
 // All artifacts are emitted as separate browser downloads triggered by user
 // interaction; modern browsers will not let a single click produce multiple
-// downloads unless they happen synchronously, so we kick all three off in
-// the same task.
+// downloads unless they happen synchronously, so all artifacts are prepared
+// and triggered by the same user action.
 
 import type { PipelineOutcome } from "../worker/types";
 import { CDNA_METHODS, formatMethodsAsText } from "@cdna/core";
@@ -20,6 +20,7 @@ import {
   type RoundForm,
 } from "../state/useRunStore";
 import {
+  LIMITS,
   validateCdsPair,
   validatePrimer,
   validateProjectName,
@@ -187,8 +188,8 @@ export function parseCdnaLockedConfig(text: string): CdnaLockedConfigImport {
   if (referenceError) throw new Error(referenceError);
 
   const sources = record(root.sources, "sources");
-  if (!Array.isArray(sources.expectedFileNames) || sources.expectedFileNames.length > 1_000) {
-    throw new Error("sources.expectedFileNames is invalid or exceeds 1,000 files.");
+  if (!Array.isArray(sources.expectedFileNames) || sources.expectedFileNames.length > LIMITS.FASTQ_FILES_MAX) {
+    throw new Error(`sources.expectedFileNames is invalid or exceeds ${LIMITS.FASTQ_FILES_MAX.toLocaleString()} files.`);
   }
   const expectedFileNames = sources.expectedFileNames.map((value, index) =>
     fastqFilename(value, `sources.expectedFileNames[${index}]`),
@@ -200,7 +201,7 @@ export function parseCdnaLockedConfig(text: string): CdnaLockedConfigImport {
     throw new Error("Per-round locked config cannot contain multiplexed source filenames.");
   }
 
-  if (!Array.isArray(root.rounds) || root.rounds.length === 0 || root.rounds.length > 100) {
+  if (!Array.isArray(root.rounds) || root.rounds.length === 0 || root.rounds.length > LIMITS.ROUND_COUNT_MAX) {
     throw new Error("Locked rounds are missing or exceed the supported limit.");
   }
   const rounds = root.rounds.map((value, index) => {
@@ -235,6 +236,12 @@ export function parseCdnaLockedConfig(text: string): CdnaLockedConfigImport {
   });
   if (new Set(rounds.map((round) => round.name)).size !== rounds.length) {
     throw new Error("Round names must be unique.");
+  }
+  if (
+    pipelineMode === "multiplexed" &&
+    new Set(rounds.map((round) => round.fwPrimer)).size !== rounds.length
+  ) {
+    throw new Error("Multiplexed rounds must use distinct forward primers.");
   }
 
   const sourceSettings = record(root.settings, "settings");
@@ -353,9 +360,10 @@ export function buildQcReport(outcome: PipelineOutcome, projectName: string): st
 
   lines.push("--- 1. DEMULTIPLEXING & SEQUENCE FILTERING TRACEABILITY ---");
   const u = outcome.unassignedBreakdown;
-  lines.push(`[*] Global Unassigned (Orphan/Low Quality) Reads: ${outcome.globalUnassigned.toLocaleString()}`);
+  lines.push(`[*] Global Pre-round Rejected/Unassigned Reads: ${outcome.globalUnassigned.toLocaleString()}`);
   lines.push(
-    `    Breakdown — low_quality: ${u.low_quality.toLocaleString()}  ` +
+    `    Breakdown — malformed_fastq: ${(u.malformed_fastq ?? 0).toLocaleString()}  ` +
+      `low_quality: ${u.low_quality.toLocaleString()}  ` +
       `no_anchor: ${u.no_anchor.toLocaleString()}  ` +
       `ambiguous: ${u.ambiguous.toLocaleString()}  ` +
       `barcode_mismatch: ${u.barcode_mismatch.toLocaleString()}`,

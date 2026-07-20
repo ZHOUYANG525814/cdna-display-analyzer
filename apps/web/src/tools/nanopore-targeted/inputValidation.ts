@@ -45,7 +45,10 @@ export async function peekNanoporeFastq(file: File): Promise<NanoporeFileCheck> 
     const decoder = new TextDecoder("utf-8", { fatal: true });
     let text = "";
     try {
-      while (text.length < 16_384) {
+      // One record can legitimately approach 50 kb sequence + 50 kb quality
+      // under this tool's reference limit. Keep the peek bounded, but large
+      // enough not to reject a valid long first read.
+      while (text.length < 256 * 1024) {
         const { done, value } = await reader.read();
         if (done) break;
         if (value) text += decoder.decode(value, { stream: true });
@@ -54,7 +57,7 @@ export async function peekNanoporeFastq(file: File): Promise<NanoporeFileCheck> 
     } finally { await reader.cancel().catch(() => undefined); }
     const lines = text.split(/\r?\n/);
     if (lines.length < 4) return { ok: false, reason: "No complete FASTQ record found in the stream prefix." };
-    if (!lines[0]!.startsWith("@") || !lines[2]!.startsWith("+")) return { ok: false, reason: "FASTQ header/separator structure is invalid." };
+    if (lines[0]!.length < 2 || !lines[0]!.startsWith("@") || /^[ \t]/.test(lines[0]!.slice(1)) || !lines[2]!.startsWith("+")) return { ok: false, reason: "FASTQ header/separator structure is invalid." };
     if (!/^[ACGTNacgtn]+$/.test(lines[1]!)) return { ok: false, reason: "First sequence contains bases outside A/C/G/T/N." };
     if (lines[1]!.length !== lines[3]!.length) return { ok: false, reason: "First sequence and quality lengths differ." };
     for (const ch of lines[3]!) {

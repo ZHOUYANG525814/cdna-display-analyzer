@@ -15,6 +15,7 @@ import {
   peekFastq,
   sanitizeDna,
   sanitizeRoundName,
+  validateDriveFastqRef,
   validateFastqFileSync,
   validatePrimer,
   validateReference,
@@ -60,7 +61,15 @@ export function ConfigureStep() {
 
   const refError = validateReference(referenceSeq);
   const refValid = refError == null;
-  const allRoundsValid = rounds.every(
+  const duplicateRoundNames =
+    new Set(rounds.map((round) => round.name)).size !== rounds.length;
+  const populatedFwPrimers = rounds
+    .map((round) => round.fwPrimer)
+    .filter(Boolean);
+  const duplicateMultiplexedPrimers =
+    !perRound &&
+    new Set(populatedFwPrimers).size !== populatedFwPrimers.length;
+  const allRoundsValid = !duplicateRoundNames && !duplicateMultiplexedPrimers && rounds.every(
     (r) =>
       validateRoundName(r.name) == null &&
       validatePrimer(r.fwPrimer, "Forward") == null &&
@@ -69,6 +78,16 @@ export function ConfigureStep() {
       // either local file OR drive ref.
       (!perRound || r.file != null || r.driveRef != null),
   );
+  const settingsValid =
+    Number.isFinite(minMeanPhred) &&
+    minMeanPhred >= 0 &&
+    minMeanPhred <= 40 &&
+    Number.isFinite(minMeanPhredCds) &&
+    minMeanPhredCds >= 0 &&
+    minMeanPhredCds <= 40 &&
+    Number.isFinite(pseudocount) &&
+    pseudocount > 0 &&
+    pseudocount <= 100;
 
   return (
     <div className="mx-auto max-w-4xl space-y-6">
@@ -134,7 +153,12 @@ export function ConfigureStep() {
               Define one round per selection step. Round 0 is the unselected library by convention.
             </CardDescription>
           </div>
-          <Button size="sm" variant="outline" onClick={addRound}>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={addRound}
+            disabled={rounds.length >= LIMITS.ROUND_COUNT_MAX}
+          >
             <Plus className="mr-1 h-3.5 w-3.5" /> Add round
           </Button>
         </CardHeader>
@@ -231,6 +255,16 @@ export function ConfigureStep() {
               </p>
             </div>
           ))}
+          {duplicateRoundNames && (
+            <p className="text-xs text-destructive">
+              Round names must be unique because they become result-table keys.
+            </p>
+          )}
+          {duplicateMultiplexedPrimers && (
+            <p className="text-xs text-destructive">
+              Multiplexed rounds need distinct forward primers; identical primers make assignment ambiguous.
+            </p>
+          )}
         </CardContent>
       </Card>
 
@@ -283,6 +317,7 @@ export function ConfigureStep() {
                 onChange={(e) => setPseudocount(Number(e.target.value))}
                 className="font-mono text-xs"
                 min={Number.MIN_VALUE}
+                max={100}
                 step={0.5}
                 list="pseudocount-options"
               />
@@ -321,7 +356,7 @@ export function ConfigureStep() {
         </Button>
         <Button
           size="lg"
-          disabled={!refValid || !allRoundsValid || !Number.isFinite(pseudocount) || pseudocount <= 0}
+          disabled={!refValid || !allRoundsValid || !settingsValid}
           onClick={goNext}
         >
           Continue to Preview <ArrowRight className="ml-1.5 h-4 w-4" />
@@ -431,9 +466,10 @@ function RoundFilePicker({
       });
       if (picked.length === 0) return;
       const first = picked[0]!;
-      // Light sanity-check the filename even on Drive files.
-      if (!/\.(fastq|fq)$/i.test(first.name)) {
-        setWarning(`${first.name} doesn't end in .fastq/.fq — accepted, but it may not parse.`);
+      const check = validateDriveFastqRef(first);
+      if (!check.ok) {
+        setError(`${first.name || "(unnamed file)"}: ${check.reason}`);
+        return;
       }
       onPickDrive({ id: first.id, name: first.name, sizeBytes: first.sizeBytes });
     } catch (e) {

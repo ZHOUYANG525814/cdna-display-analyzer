@@ -1,5 +1,5 @@
 // Sankey diagram of the read-filtering funnel:
-//   Total reads → {low_quality | no_anchor | ambiguous | barcode_mismatch | per-round assigned}
+//   Total reads → {malformed_fastq | low_quality | no_anchor | ambiguous | barcode_mismatch | per-round assigned}
 //   per-round assigned → {discard_truncated | discard_stop_codon | passed_qc}
 //
 // Read this as "which buckets are bleeding reads": wide bands going to discards
@@ -104,10 +104,12 @@ function buildSankeyData(outcome: PipelineOutcome): SankeyData {
 
   // Left fan-out — unassigned buckets that capture reads before any round.
   const u = outcome.unassignedBreakdown;
+  const nMalformed = addNode("Malformed FASTQ");
   const nLowQ = addNode("Low Q-score");
   const nNoAnchor = addNode("No Fw anchor");
   const nAmbig = addNode("Ambiguous primer");
   const nBcMis = addNode("Barcode mismatch");
+  addLink(total, nMalformed, u.malformed_fastq ?? 0);
   addLink(total, nLowQ, u.low_quality);
   addLink(total, nNoAnchor, u.no_anchor);
   addLink(total, nAmbig, u.ambiguous);

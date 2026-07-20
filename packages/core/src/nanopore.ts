@@ -111,6 +111,9 @@ export interface NanoporeRoundStats {
 }
 
 export interface NanoporeGlobalBreakdown {
+  /** FASTQ records whose four-line structure, sequence alphabet, or
+   * Phred+33 quality text is invalid. */
+  malformed_fastq: number;
   low_quality_read: number;
   barcode_mismatch: number;
   /** Reads bound to a round (or per-round in per-round mode) but where no
@@ -213,7 +216,12 @@ export class NanoporeEngine {
     this.stats = new Map();
     this.dnaCounters = new Map();
     this.haplotypeCounters = new Map();
-    this.globalBreakdown = { low_quality_read: 0, barcode_mismatch: 0, no_site_extracted: 0 };
+    this.globalBreakdown = {
+      malformed_fastq: 0,
+      low_quality_read: 0,
+      barcode_mismatch: 0,
+      no_site_extracted: 0,
+    };
 
     for (const r of rounds) {
       const siteStats: Record<string, NanoporeSiteStats> = {};
@@ -243,6 +251,12 @@ export class NanoporeEngine {
       return "barcode_mismatch";
     }
     return this.processForRoundInternal(seq, qual, roundIdx);
+  }
+
+  /** Charge a damaged FASTQ record without sending invalid bytes through
+   * anchor alignment or Q-score calculations. */
+  recordMalformedFastq(): void {
+    this.globalBreakdown.malformed_fastq++;
   }
 
   /** Process a read in per-round mode — round is bound by the orchestrator. */

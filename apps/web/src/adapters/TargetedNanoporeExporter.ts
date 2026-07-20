@@ -32,7 +32,7 @@ export interface TargetedExportSnapshot {
 
 export const TARGETED_EXPORT_FILES = [
   ["Master_Enrichment_Matrix.csv.gz", "Complete per-target amino-acid count, RPM, round-to-baseline enrichment, variance and FDR matrix"],
-  ["Combination_Enrichment_Matrix.csv.gz", "All target amino acids concatenated in confirmed target order and analyzed as one linked combination"],
+  ["Combination_Enrichment_Matrix.csv.gz", "For 2+ targets, all target amino acids concatenated in confirmed target order and analyzed as one linked combination"],
   ["run_stats.json", "Machine-readable configuration, file QC, filter funnel, target callability and provenance"],
   ["QC_Summary_Report.txt", "Human-readable QC logic, abnormal-event handling, formulas and caveats"],
   ["locked_config.json", "Re-runnable configuration without sequencing files, paths, Drive IDs or credentials"],
@@ -88,7 +88,7 @@ export function buildRunStats(outcome: TargetedNanoporeOutcome, snapshot: Target
     project: snapshot.projectName, startedAt: toIso(snapshot.startedAt), finishedAt: toIso(snapshot.finishedAt),
     durationSeconds: snapshot.startedAt && snapshot.finishedAt ? (snapshot.finishedAt - snapshot.startedAt) / 1000 : null,
     rounds: outcome.roundNames, targets: outcome.targets, referenceDnaByTarget: outcome.wtBySite,
-    effectiveSettings: { ...snapshot.settings, reportHaplotypes: snapshot.reportHaplotypes, rescueFlankBases: 30, concatemerLengthRatio: 1.5 },
+    effectiveSettings: { ...snapshot.settings, reportHaplotypes: snapshot.sites.length >= 2, rescueFlankBases: 30, concatemerLengthRatio: 1.5 },
     statsByRound, fileStats: outcome.fileStats,
     filterFunnel: outcome.roundNames.map((round) => ({ round, ...outcome.statsByRound[round]!.primary_drop_reasons })),
     targetCallability: outcome.roundNames.flatMap((round) => outcome.siteNames.map((target) => { const { wt_count, ...values } = outcome.statsByRound[round]!.sites[target]!; return { round, target, ...values, referenceAaCount: wt_count }; })),
@@ -138,7 +138,7 @@ export function buildLockedConfig(snapshot: TargetedExportSnapshot) {
     })),
     settings: {
       ...snapshot.settings,
-      reportHaplotypes: snapshot.reportHaplotypes,
+      reportHaplotypes: snapshot.sites.length >= 2,
       rescueFlankBases: 30,
     },
     fixedSafeguards: { concatemerLengthRatio: 1.5 },
@@ -241,6 +241,12 @@ export function parseLockedConfig(text: string): TargetedLockedConfigImport {
   if (sourceSettings.reportHaplotypes !== true && sourceSettings.reportHaplotypes !== false) {
     throw new Error("settings.reportHaplotypes must be boolean.");
   }
+  if (sites.length >= 2 && sourceSettings.reportHaplotypes !== true) {
+    throw new Error("settings.reportHaplotypes must be true when two or more targets are configured.");
+  }
+  if (sites.length < 2 && sourceSettings.reportHaplotypes !== false) {
+    throw new Error("settings.reportHaplotypes must be false when fewer than two targets are configured.");
+  }
   if (sourceSettings.rescueFlankBases !== 30) throw new Error("Unsupported rescueFlankBases.");
   const safeguards = record(root.fixedSafeguards, "fixedSafeguards");
   if (safeguards.concatemerLengthRatio !== 1.5) throw new Error("Unsupported concatemer safeguard.");
@@ -267,11 +273,16 @@ export function buildTargetedQcReport(outcome: TargetedNanoporeOutcome, snapshot
     "--- 1. EXCLUSIVE WHOLE-READ FILTER FUNNEL ---", buildFilterFunnelCsv(outcome).trim(), "",
     "A read receives one primary whole-read drop reason. Overlapping diagnostic failures remain in run_stats.json. Target rescue is reported separately and is never subtracted twice.", "",
     "--- 2. TARGET CALLABILITY & READ PRESERVATION ---", buildSiteCallabilityCsv(outcome).trim(), "",
-    "Callable_Total = Callable_Full + Callable_Rescued. Target denominators are independent: failure at A304 does not erase a valid R233 call. Combinations use full-QC reads only.", "",
+    "Callable_Total = Callable_Full + Callable_Rescued. Target denominators are independent: failure at A304 does not erase a valid R233 call. For 2+ targets, combinations use full-QC reads only.", "",
     "--- 3. MULTI-TARGET COMBINATION ENRICHMENT ---",
-    "Combination_AA is self-describing and formed in locked target order (for example R233W|A304V|G331D).",
-    "A read enters this matrix only when every target codon is callable and the full read passes QC. Partial rescued calls are excluded because an incomplete read cannot establish linkage.",
-    "Counts, RPM, log2((RPM_round+p)/(RPM_Round0+p)) enrichment, Enrich2-style four-term variance, p-value and BH-FDR reuse the NGS statistical helpers; combination rows form their own multiple-testing family.", "",
+    ...(snapshot.sites.length >= 2
+      ? [
+          "Combination_AA is self-describing and formed in locked target order (for example R233W|A304V|G331D).",
+          "A read enters this matrix only when every target codon is callable and the full read passes QC. Partial rescued calls are excluded because an incomplete read cannot establish linkage.",
+          "Counts, RPM, log2((RPM_round+p)/(RPM_Round0+p)) enrichment, Enrich2-style four-term variance, p-value and BH-FDR reuse the NGS statistical helpers; combination rows form their own multiple-testing family.",
+        ]
+      : ["Not applicable: linked-combination analysis requires at least two targets."]),
+    "",
     "--- 4. HOW SUBSTITUTIONS, INSERTIONS AND DELETIONS ARE HANDLED ---",
     "Substitution outside a target: retained while target-masked protected identity passes; accumulated mismatch can fail low_protected_identity.",
     "Substitution inside a target: called as a codon only when all three projected bases are unambiguous and meet target base Q. Intended target substitutions are excluded from protected-identity scoring.",
@@ -293,7 +304,7 @@ export function methodSettings(snapshot: TargetedExportSnapshot) { return [
   { label: "Target base Q", value: `≥ ${snapshot.settings.minTargetBaseQ}` }, { label: "Round 0 score threshold", value: `≥ ${snapshot.settings.minInputCountToScore}` },
   { label: "Enrichment pseudocount (RPM)", value: snapshot.settings.pseudocount.toString() },
   { label: "Reference coverage (fixed)", value: `≥ ${snapshot.settings.minReferenceCoverage}` }, { label: "Alignment identity (fixed)", value: `≥ ${snapshot.settings.minAlignmentIdentity}` },
-  { label: "Protected indel limit (fixed)", value: `≤ ${snapshot.settings.maxProtectedIndelBases} nt` }, { label: "Linked combinations", value: snapshot.reportHaplotypes ? "full-QC reads" : "off" },
+  { label: "Protected indel limit (fixed)", value: `≤ ${snapshot.settings.maxProtectedIndelBases} nt` }, { label: "Linked combinations", value: snapshot.sites.length >= 2 ? "full-QC reads" : "not applicable (<2 targets)" },
 ]; }
 
 function csv(rows: ReadonlyArray<ReadonlyArray<string | number>>): string { return rows.map((row) => row.map((v) => `"${String(v).replaceAll('"', '""')}"`).join(",")).join("\n") + "\n"; }
