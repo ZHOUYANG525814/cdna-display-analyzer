@@ -28,11 +28,13 @@ describe("runTargetedNanoporePipeline", () => {
     const r0a = Array.from({ length: 10 }, (_, i) => record(`w${i}`, REF)).join("") + record("mut0", mutate("TGG"));
     const r0b = record("w0", REF) + record("rev", rc(mutate("TGG")));
     const r1 = record("w1x", REF) + Array.from({ length: 10 }, (_, i) => record(`m${i}`, mutate("TGG"))).join("");
+    const log: string[] = [];
     const result = await runTargetedNanoporePipeline({
       sources: [new MemoryFastq("r0a", r0a), new MemoryFastq("r0b", r0b), new MemoryFastq("r1", r1)],
       sourceRoundIndices: [0, 0, 1], roundNames: ["Round 0", "Round 1"], reference: REF,
       sites: [{ name: "site_01", ntStart: TARGET, length: 3, design: "ANY" }],
       settings: { minReadQ: 10, minReferenceCoverage: 0.9, minAlignmentIdentity: 0.85, minProtectedIdentity: 0.95, maxProtectedIndelBases: 30, minTargetBaseQ: 15, minInputCountToScore: 1, pseudocount: 0.5, reportHaplotypes: false },
+      onLog: (event) => log.push(event.text),
     });
     expect(result.stats.get("Round 0")!.duplicate_read_ids).toBe(1);
     expect(result.dnaCounters.get("Round 0")!.get("site_01")!.get("TGG")).toBe(2);
@@ -43,6 +45,10 @@ describe("runTargetedNanoporePipeline", () => {
     const referenceAla = result.analyzer.perSiteRows.find((x) => x.Variant_AA === "A")!;
     expect(referenceAla["Enrichment_Round 1_vs_Round 0"] as number).toBeLessThan(-2);
     expect(referenceAla["Enrichment_Round 1_vs_Round 0"]).not.toBe(0);
+    expect(log.some((line) => line.startsWith("Settings ·"))).toBe(true);
+    expect(log.some((line) => line.includes("r0a") && line.includes("complete"))).toBe(true);
+    expect(log.some((line) => line.startsWith("Round 0 summary"))).toBe(true);
+    expect(log.at(-1)).toMatch(/^Pipeline complete/);
   });
 
   it("rescues a locally high-quality target from a partial read without creating a haplotype", async () => {

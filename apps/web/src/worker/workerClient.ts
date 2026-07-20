@@ -129,11 +129,13 @@ export async function runNanoporeInWorker(
 export async function runTargetedNanoporeInWorker(
   job: TargetedNanoporeJob,
   onProgress?: (msg: PipelineProgressMsg) => void,
+  onLog?: (msg: PipelineLogMsg) => void,
 ): Promise<TargetedNanoporeOutcome> {
   const a = ensureWorker();
   await workerReady;
   const progress = onProgress ? Comlink.proxy(onProgress) : undefined;
-  return a.runTargetedNanopore(job, progress);
+  const log = onLog ? Comlink.proxy(onLog) : undefined;
+  return a.runTargetedNanopore(job, progress, log);
 }
 
 /** Parse the analyzer's CSV blob inside the worker so the streaming pass

@@ -220,6 +220,7 @@ export function ConfigureStep() {
                 <RoundFilePicker
                   file={r.file}
                   driveRef={r.driveRef}
+                  expectedFileName={r.expectedFileName}
                   onPickLocal={(f) => updateRound(r.id, { file: f, driveRef: null })}
                   onPickDrive={(d) => updateRound(r.id, { file: null, driveRef: d })}
                   onClear={() => updateRound(r.id, { file: null, driveRef: null })}
@@ -358,12 +359,14 @@ const API_KEY = import.meta.env.VITE_GOOGLE_API_KEY as string | undefined;
 function RoundFilePicker({
   file,
   driveRef,
+  expectedFileName,
   onPickLocal,
   onPickDrive,
   onClear,
 }: {
   file: File | null;
   driveRef: DriveFileRef | null;
+  expectedFileName: string | null;
   onPickLocal: (f: File) => void;
   onPickDrive: (d: DriveFileRef) => void;
   onClear: () => void;
@@ -375,6 +378,11 @@ function RoundFilePicker({
   const driveConfigured = !!(CLIENT_ID && API_KEY);
   const driveSignedIn = isDriveSignedIn();
   const hasSource = file != null || driveRef != null;
+  const actualFileName = file?.name ?? driveRef?.name ?? null;
+  const lockedNameMismatch =
+    actualFileName != null &&
+    expectedFileName != null &&
+    actualFileName !== expectedFileName;
 
   const handleLocal = async (f: File) => {
     setError(null);
@@ -523,9 +531,18 @@ function RoundFilePicker({
           </>
         )}
         {!hasSource && (
-          <span className="text-xs text-muted-foreground">No file bound</span>
+          <span className="text-xs text-muted-foreground">
+            {expectedFileName
+              ? `Expected: ${expectedFileName} — select file`
+              : "No file bound"}
+          </span>
         )}
       </div>
+      {lockedNameMismatch && (
+        <p className="mt-2 text-xs text-amber-700 dark:text-amber-400">
+          Locked config expected {expectedFileName}; the selected file is accepted, but verify this round assignment.
+        </p>
+      )}
       {error && <p className="mt-2 text-xs text-destructive">{error}</p>}
       {warning && !error && <p className="mt-2 text-xs text-warning">{warning}</p>}
     </div>

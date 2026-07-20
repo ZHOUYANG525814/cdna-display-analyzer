@@ -69,6 +69,36 @@ describe("targeted Nanopore web contract", () => {
       pseudocount: 0.5,
     });
     expect(state.qcLocked).toBe(false);
+    expect(state.runState).toMatchObject({
+      status: "idle",
+      progress: null,
+      perSourceBytes: {},
+      log: [],
+    });
+  });
+
+  it("tracks targeted progress and live log entries in run state", () => {
+    const state = useTargetedNanoporeStore.getState();
+    state.setRunState({
+      status: "running",
+      progress: null,
+      perSourceBytes: {},
+      log: [],
+    });
+    state.updateRunProgress({
+      sourceIndex: 1,
+      fileName: "round1.fastq",
+      bytesProcessed: 1024,
+      totalBytes: 2048,
+      recordsProcessed: 10,
+    });
+    state.appendRunLog({ tag: "info", msg: "source started" });
+    expect(useTargetedNanoporeStore.getState().runState).toMatchObject({
+      status: "running",
+      progress: { sourceIndex: 1, recordsProcessed: 10 },
+      perSourceBytes: { 1: 1024 },
+      log: [{ tag: "info", msg: "source started" }],
+    });
   });
 
   it("loads locked filename hints and accepts a non-matching replacement without blocking", () => {

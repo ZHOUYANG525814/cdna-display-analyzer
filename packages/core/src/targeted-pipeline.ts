@@ -36,9 +36,14 @@ export interface TargetedPipelineRequest {
   /** Test/diagnostic cap. Production Web runs omit this and stream to EOF. */
   maxReadsPerSource?: number;
   onProgress?: (event: TargetedPipelineProgress) => void;
+  onLog?: (event: TargetedPipelineLogEvent) => void;
   signal?: AbortSignal;
 }
 export interface TargetedPipelineProgress { sourceIndex: number; bytesProcessed: number; totalBytes: number | null; recordsProcessed: number; }
+export interface TargetedPipelineLogEvent {
+  text: string;
+  tag: "info" | "success" | "warning" | "error";
+}
 export type TargetedPrimaryDropReason = TargetedQcFailure | "alignment_failed" | "duplicate_read_id" | "concatemer_or_chimera" | "malformed_fastq";
 export interface TargetedFileStats {
   name: string; round: string; totalReads: number; duplicateReadIds: number; aligned: number;
@@ -81,9 +86,25 @@ async function* streamToAsyncIter(stream: ReadableStream<Uint8Array>, signal: Ab
 }
 
 export async function runTargetedNanoporePipeline(req: TargetedPipelineRequest): Promise<TargetedPipelineResult> {
+  const startedAt = Date.now();
+  const log = (text: string, tag: TargetedPipelineLogEvent["tag"] = "info") =>
+    req.onLog?.({ text, tag });
   if (req.sources.length === 0 || req.sources.length !== req.sourceRoundIndices.length) throw new Error("Every source must be bound to exactly one round.");
   if (req.roundNames.length < 2 || req.roundNames.some((name, i) => name !== `Round ${i}`)) throw new Error("Rounds must be consecutive from Round 0.");
   const { reference: refString, sites } = resolveTargetSites(req.reference, req.sites);
+  log(
+    `Settings · reference=${refString.length} nt · rounds=${req.roundNames.length} · ` +
+      `targets=${sites.length} · minReadQ=${req.settings.minReadQ} · ` +
+      `coverage≥${req.settings.minReferenceCoverage} · alignmentIdentity≥${req.settings.minAlignmentIdentity} · ` +
+      `protectedIdentity≥${req.settings.minProtectedIdentity} · targetBaseQ≥${req.settings.minTargetBaseQ}`,
+  );
+  log(
+    `Statistics · enrichment=log2((RPM_round+p)/(RPM_Round0+p)) · p=${req.settings.pseudocount} RPM · ` +
+      `baseline count≥${req.settings.minInputCountToScore} · variance=Enrich2-style · FDR=BH`,
+  );
+  log(
+    `Targets · ${sites.map((site) => `${site.name}:nt${site.ntStart}-${site.ntStart + 2}:${site.wtDna}/${site.wtAa}`).join(" · ")}`,
+  );
   const reference = ENC.encode(refString);
   const seedIndex = createTargetedReferenceSeedIndex(reference);
   const protectedMask = buildProtectedMask(reference.length, sites);
@@ -103,6 +124,11 @@ export async function runTargetedNanoporePipeline(req: TargetedPipelineRequest):
     const round = req.roundNames[req.sourceRoundIndices[sourceIndex]!]!;
     if (!round) throw new Error(`Source ${sourceIndex} has an invalid round binding.`);
     const desc = source.describe();
+    const sourceStartedAt = Date.now();
+    log(
+      `Source ${sourceIndex + 1}/${req.sources.length} started · ${desc.name} → ${round} · ` +
+        `${desc.sizeBytes == null ? "size unknown" : formatBytes(desc.sizeBytes)}`,
+    );
     const stream = await source.open(req.signal);
     const roundStats = stats.get(round)!;
     const seen = seenByRound.get(round)!;
@@ -198,7 +224,20 @@ export async function runTargetedNanoporePipeline(req: TargetedPipelineRequest):
       }
     }
     req.onProgress?.({ sourceIndex, bytesProcessed, totalBytes: desc.sizeBytes, recordsProcessed });
+    const drops = Object.entries(perFile.primaryDropReasons)
+      .filter(([, count]) => count > 0)
+      .sort((a, b) => b[1] - a[1])
+      .map(([reason, count]) => `${reason}=${count}`)
+      .join(", ");
+    log(
+      `Source ${sourceIndex + 1}/${req.sources.length} complete · ${desc.name} · ` +
+        `reads=${perFile.totalReads.toLocaleString()} · aligned=${perFile.aligned.toLocaleString()} · ` +
+        `fullQC=${perFile.fullQcPassed.toLocaleString()} · rescuedCalls=${perFile.rescuedSiteCalls.toLocaleString()} · ` +
+        `drops=${drops || "none"} · ${elapsed(sourceStartedAt)}`,
+      "success",
+    );
   }
+  log("Counting complete; calculating amino-acid enrichment, variance, p-values and BH-FDR.");
   const analyzer = runNanoporeAnalyzer({
     roundNames: req.roundNames, siteNames: sites.map((s) => s.name), dnaCounters, haplotypeCounters, stats,
     sites: sites.map((s) => ({ name: s.name, wtDna: s.wtDna })), emitHaplotype: req.settings.reportHaplotypes,
@@ -206,11 +245,39 @@ export async function runTargetedNanoporePipeline(req: TargetedPipelineRequest):
     displayMode: "targeted-aa",
     pseudocount: req.settings.pseudocount,
   });
+  for (const round of req.roundNames) {
+    const roundStats = stats.get(round)!;
+    log(
+      `${round} summary · reads=${roundStats.total_reads.toLocaleString()} · ` +
+        `aligned=${roundStats.aligned.toLocaleString()} · fullQC=${roundStats.full_qc_passed.toLocaleString()} · ` +
+        sites.map((site) => `${site.name} callable=${roundStats.sites[site.name]!.passed_qc.toLocaleString()}`).join(" · "),
+    );
+  }
+  for (const [family, value] of Object.entries(analyzer.libraryMedianFitness)) {
+    const tag = Math.abs(value) > 1 ? "warning" : "info";
+    log(`Library median · ${family}=${value.toFixed(4)}${tag === "warning" ? " (large shift; interpret median centering cautiously)" : ""}`, tag);
+  }
   const exactCodonCsvParts = buildExactCodonCsv(req.roundNames, sites, dnaCounters, stats);
   const exactHaplotypeCsvParts = req.settings.reportHaplotypes
     ? buildExactHaplotypeCsv(req.roundNames, sites, haplotypeCounters, stats)
     : [];
+  log(
+    `Pipeline complete · target rows=${analyzer.perSiteRows.length.toLocaleString()} · ` +
+      `combination rows=${analyzer.haplotypeRows.length.toLocaleString()} · ${elapsed(startedAt)}`,
+    "success",
+  );
   return { dnaCounters, haplotypeCounters, stats, fileStats, resolvedSites: sites, analyzer, exactCodonCsvParts, exactHaplotypeCsvParts };
+}
+
+function elapsed(startedAt: number): string {
+  return `${((Date.now() - startedAt) / 1000).toFixed(1)}s`;
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 ** 2) return `${(bytes / 1024).toFixed(1)} KiB`;
+  if (bytes < 1024 ** 3) return `${(bytes / 1024 ** 2).toFixed(1)} MiB`;
+  return `${(bytes / 1024 ** 3).toFixed(2)} GiB`;
 }
 
 function buildExactCodonCsv(

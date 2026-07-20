@@ -42,6 +42,7 @@ export const DEMO_ROUNDS: ReadonlyArray<Omit<RoundForm, "id">> = [
     cdsEnd: 57,
     file: null,
     driveRef: null,
+    expectedFileName: null,
   },
   {
     name: "Round_1",
@@ -51,6 +52,7 @@ export const DEMO_ROUNDS: ReadonlyArray<Omit<RoundForm, "id">> = [
     cdsEnd: 54,
     file: null,
     driveRef: null,
+    expectedFileName: null,
   },
 ];
 

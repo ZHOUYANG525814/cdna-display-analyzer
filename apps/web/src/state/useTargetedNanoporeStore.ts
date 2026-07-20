@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { normalizeReference, resolveTargetSites, type TargetedQcSettings } from "@cdna/core";
-import type { DriveFileRef } from "../worker/types";
+import type { DriveFileRef, PipelineProgressMsg } from "../worker/types";
 import { NANOPORE_INPUT_LIMITS, validateNanoporeDriveFile, validateNanoporeLocalFile } from "../tools/nanopore-targeted/inputValidation";
 import { validateProjectName } from "../lib/validation";
 
@@ -37,11 +37,20 @@ export interface TargetedCallingSettings extends TargetedQcSettings {
 }
 
 export interface TargetedRunState {
-  status: "idle" | "running" | "done" | "error";
+  status: "idle" | "running" | "done" | "error" | "cancelled";
   error: string | null;
   outcome: import("../worker/types").TargetedNanoporeOutcome | null;
   startedAt: number | null;
   finishedAt: number | null;
+  progress: PipelineProgressMsg | null;
+  perSourceBytes: Record<number, number>;
+  log: TargetedLogEntry[];
+}
+
+export interface TargetedLogEntry {
+  ts: number;
+  tag: "info" | "success" | "warning" | "error";
+  msg: string;
 }
 
 export interface TargetedLockedConfigImport {
@@ -87,6 +96,8 @@ interface TargetedNanoporeState {
   setReportHaplotypes: (value: boolean) => void;
   runState: TargetedRunState;
   setRunState: (patch: Partial<TargetedRunState>) => void;
+  updateRunProgress: (progress: PipelineProgressMsg) => void;
+  appendRunLog: (entry: Omit<TargetedLogEntry, "ts">) => void;
   loadLockedConfig: (config: TargetedLockedConfigImport) => void;
   /** Return to a genuinely fresh initial wizard. */
   prepareNextRun: () => void;
@@ -109,6 +120,19 @@ function uid(prefix: string): string {
 
 function makeRound(round: number): TargetedRoundForm {
   return { id: uid("round"), round, files: [] };
+}
+
+function emptyRunState(): TargetedRunState {
+  return {
+    status: "idle",
+    error: null,
+    outcome: null,
+    startedAt: null,
+    finishedAt: null,
+    progress: null,
+    perSourceBytes: {},
+    log: [],
+  };
 }
 
 function expectedSource(expectedFileName: string): TargetedSourceFile {
@@ -219,8 +243,24 @@ export const useTargetedNanoporeStore = create<TargetedNanoporeState>((set, get)
   setQcLocked: (qcLocked) => set({ qcLocked }),
   reportHaplotypes: true,
   setReportHaplotypes: (reportHaplotypes) => set({ reportHaplotypes }),
-  runState: { status: "idle", error: null, outcome: null, startedAt: null, finishedAt: null },
+  runState: emptyRunState(),
   setRunState: (patch) => set({ runState: { ...get().runState, ...patch } }),
+  updateRunProgress: (progress) => set({
+    runState: {
+      ...get().runState,
+      progress,
+      perSourceBytes: {
+        ...get().runState.perSourceBytes,
+        [progress.sourceIndex]: progress.bytesProcessed,
+      },
+    },
+  }),
+  appendRunLog: (entry) => set({
+    runState: {
+      ...get().runState,
+      log: [...get().runState.log, { ...entry, ts: Date.now() }],
+    },
+  }),
   loadLockedConfig: (config) => set({
     currentStep: "inputs",
     projectName: config.projectName,
@@ -241,7 +281,7 @@ export const useTargetedNanoporeStore = create<TargetedNanoporeState>((set, get)
     settings: { ...config.settings },
     reportHaplotypes: config.reportHaplotypes,
     qcLocked: false,
-    runState: { status: "idle", error: null, outcome: null, startedAt: null, finishedAt: null },
+    runState: emptyRunState(),
   }),
   prepareNextRun: () => set({
     currentStep: "inputs",
@@ -255,7 +295,7 @@ export const useTargetedNanoporeStore = create<TargetedNanoporeState>((set, get)
     settings: { ...TARGETED_USER_DEFAULTS },
     qcLocked: false,
     reportHaplotypes: true,
-    runState: { status: "idle", error: null, outcome: null, startedAt: null, finishedAt: null },
+    runState: emptyRunState(),
   }),
 }));
 

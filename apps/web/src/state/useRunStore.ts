@@ -52,6 +52,31 @@ export interface RoundForm {
   /** Per-round FASTQ from Google Drive. Only used when
    *  pipelineMode === "per-round". Mutually exclusive with `file`. */
   driveRef: DriveFileRef | null;
+  /** Filename retained by an imported locked config. This is a prompt only:
+   *  the user must reselect the actual FASTQ before running. */
+  expectedFileName: string | null;
+}
+
+export interface CdnaLockedConfigImport {
+  projectName: string;
+  pipelineMode: PipelineMode;
+  referenceSeq: string;
+  expectedFileNames: string[];
+  rounds: Array<{
+    name: string;
+    fwPrimer: string;
+    rvPrimer: string;
+    cdsStart: number;
+    cdsEnd: number;
+    expectedFileName: string | null;
+  }>;
+  settings: {
+    filterStop: boolean;
+    useWasm: boolean;
+    minMeanPhred: number;
+    minMeanPhredCds: number;
+    pseudocount: number;
+  };
 }
 
 // PreviewResult + PreviewStatus live in the cDNA tool module; re-export so
@@ -66,6 +91,8 @@ interface RunState {
   projectName: string;
   localFiles: File[];
   driveFiles: DriveFileRef[];
+  /** Multiplexed-mode filename prompts restored from a locked config. */
+  expectedFileNames: string[];
 
   // Step 2 — configure
   referenceSeq: string;
@@ -132,6 +159,7 @@ interface RunState {
   cancelRun: () => void;
 
   appendLog: (entry: Omit<LogEntry, "at">) => void;
+  loadLockedConfig: (config: CdnaLockedConfigImport) => void;
 
   resetAll: () => void;
 }
@@ -149,6 +177,7 @@ function defaultRound(idx: number): RoundForm {
     cdsEnd: null,
     file: null,
     driveRef: null,
+    expectedFileName: null,
   };
 }
 
@@ -158,6 +187,7 @@ export const useRunStore = create<RunState>((set, get) => ({
   projectName: "",
   localFiles: [],
   driveFiles: [],
+  expectedFileNames: [],
 
   referenceSeq: "",
   rounds: [defaultRound(0), defaultRound(1)],
@@ -240,6 +270,38 @@ export const useRunStore = create<RunState>((set, get) => ({
   cancelRun: () => set({ status: "cancelled", finishedAt: performance.now() }),
 
   appendLog: (entry) => set((s) => ({ log: [...s.log, { ...entry, at: performance.now() }] })),
+  loadLockedConfig: (config) =>
+    set({
+      currentStep: "sources",
+      projectName: config.projectName,
+      localFiles: [],
+      driveFiles: [],
+      expectedFileNames: [...config.expectedFileNames],
+      referenceSeq: config.referenceSeq,
+      rounds: config.rounds.map((round) => ({
+        id: mkRoundId(),
+        ...round,
+        file: null,
+        driveRef: null,
+      })),
+      adaptive: true,
+      filterStop: config.settings.filterStop,
+      useWasm: config.settings.useWasm,
+      minMeanPhred: config.settings.minMeanPhred,
+      minMeanPhredCds: config.settings.minMeanPhredCds,
+      pseudocount: config.settings.pseudocount,
+      pipelineMode: config.pipelineMode,
+      estimatedReadLength: 150,
+      previewResults: [],
+      status: "idle",
+      progress: null,
+      perSourceBytes: {},
+      startedAt: null,
+      finishedAt: null,
+      log: [],
+      outcome: null,
+      errorMessage: null,
+    }),
 
   resetAll: () =>
     set({
@@ -247,6 +309,7 @@ export const useRunStore = create<RunState>((set, get) => ({
       projectName: "",
       localFiles: [],
       driveFiles: [],
+      expectedFileNames: [],
       referenceSeq: "",
       rounds: [defaultRound(0), defaultRound(1)],
       adaptive: true,

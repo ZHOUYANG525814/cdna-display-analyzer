@@ -8,6 +8,7 @@ describe("New run resets", () => {
       currentStep: "results",
       projectName: "finished",
       localFiles: [new File(["x"], "reads.fastq")],
+      expectedFileNames: ["reads.fastq"],
       referenceSeq: "ACG",
       adaptive: false,
       filterStop: false,
@@ -29,6 +30,7 @@ describe("New run resets", () => {
       step: state.currentStep,
       project: state.projectName,
       files: state.localFiles.length + state.driveFiles.length,
+      expectedFiles: state.expectedFileNames,
       reference: state.referenceSeq,
       rounds: state.rounds.length,
       settings: [
@@ -48,6 +50,7 @@ describe("New run resets", () => {
       step: "sources",
       project: "",
       files: 0,
+      expectedFiles: [],
       reference: "",
       rounds: 2,
       settings: [true, true, true, 20, 20, 0.5, "multiplexed"],

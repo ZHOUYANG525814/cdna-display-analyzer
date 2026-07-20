@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { FolderOpen, FileText, Cloud, X, ArrowRight, Sparkles, Layers, Files } from "lucide-react";
+import { FolderOpen, FileText, Cloud, X, ArrowRight, Sparkles, Layers, Files, FileUp } from "lucide-react";
 import { useRunStore } from "@/state/useRunStore";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -10,6 +10,7 @@ import { Badge } from "@/components/ui/badge";
 import { DriveAuthProvider } from "@/adapters/DriveAuthProvider";
 import { showDrivePicker } from "@/adapters/DrivePicker";
 import { DEMO_REFERENCE, DEMO_ROUNDS, loadDemoFastq } from "@/tools/cdna-display/demo";
+import { parseCdnaLockedConfig } from "@/adapters/BrowserExporter";
 import {
   LIMITS,
   peekFastq,
@@ -37,6 +38,8 @@ export function SourcesStep() {
     setStep,
     pipelineMode,
     setPipelineMode,
+    expectedFileNames,
+    loadLockedConfig,
   } = useRunStore();
   const totalFiles = localFiles.length + driveFiles.length;
   const perRound = pipelineMode === "per-round";
@@ -53,6 +56,7 @@ export function SourcesStep() {
     return "local";
   });
   const inputRef = useRef<HTMLInputElement>(null);
+  const configInputRef = useRef<HTMLInputElement>(null);
   const [dragActive, setDragActive] = useState(false);
   const [demoBusy, setDemoBusy] = useState(false);
   const [demoLoadedAt, setDemoLoadedAt] = useState<number | null>(null);
@@ -63,6 +67,10 @@ export function SourcesStep() {
     return () => clearTimeout(id);
   }, [demoLoadedAt]);
   const [demoErr, setDemoErr] = useState<string | null>(null);
+  const [configMessage, setConfigMessage] = useState<{
+    tone: "success" | "error";
+    text: string;
+  } | null>(null);
 
   const [fileWarnings, setFileWarnings] = useState<string[]>([]);
 
@@ -99,6 +107,7 @@ export function SourcesStep() {
       const file = await loadDemoFastq();
       setLocalFiles([file]);
       setDriveFiles([]);
+      useRunStore.setState({ expectedFileNames: [] });
       setProjectName("test_ngs_demo");
       setReferenceSeq(DEMO_REFERENCE);
       const nextRounds = DEMO_ROUNDS.map((r, i) => ({
@@ -117,6 +126,27 @@ export function SourcesStep() {
     }
   };
 
+  const importLockedConfig = async (file: File | undefined) => {
+    if (!file) return;
+    try {
+      if (file.size > 2 * 1024 * 1024) {
+        throw new Error("Locked config exceeds the 2 MB safety limit.");
+      }
+      loadLockedConfig(parseCdnaLockedConfig(await file.text()));
+      setDemoLoadedAt(null);
+      setFileWarnings([]);
+      setConfigMessage({
+        tone: "success",
+        text: "Locked config imported. Reselect the named sequencing file(s) before running.",
+      });
+    } catch (error) {
+      setConfigMessage({
+        tone: "error",
+        text: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
+
   return (
     <div className="mx-auto max-w-4xl space-y-6">
       <Card className={demoActive ? "ring-2 ring-primary/40" : ""}>
@@ -125,10 +155,30 @@ export function SourcesStep() {
             <CardTitle>Project</CardTitle>
             <CardDescription>Name that appears on your downloaded artifacts.</CardDescription>
           </div>
-          <Button size="sm" variant="outline" onClick={loadDemo} disabled={demoBusy} className="shrink-0">
-            <Sparkles className="mr-1.5 h-3.5 w-3.5" />
-            {demoBusy ? "Loading demo…" : "Try with demo data"}
-          </Button>
+          <div className="flex shrink-0 flex-wrap gap-2">
+            <input
+              ref={configInputRef}
+              type="file"
+              accept=".json,application/json"
+              className="hidden"
+              onChange={(event) => {
+                void importLockedConfig(event.target.files?.[0]);
+                event.target.value = "";
+              }}
+            />
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => configInputRef.current?.click()}
+            >
+              <FileUp className="mr-1.5 h-3.5 w-3.5" />
+              Import locked config
+            </Button>
+            <Button size="sm" variant="outline" onClick={loadDemo} disabled={demoBusy}>
+              <Sparkles className="mr-1.5 h-3.5 w-3.5" />
+              {demoBusy ? "Loading demo…" : "Try with demo data"}
+            </Button>
+          </div>
         </CardHeader>
         <CardContent>
           <Label htmlFor="project">Project name</Label>
@@ -154,6 +204,17 @@ export function SourcesStep() {
             );
           })()}
           {demoErr && <p className="mt-1.5 text-sm text-destructive">{demoErr}</p>}
+          {configMessage && (
+            <p
+              className={`mt-2 rounded border p-2 text-xs ${
+                configMessage.tone === "error"
+                  ? "border-destructive/40 text-destructive"
+                  : "border-emerald-500/40 text-emerald-700 dark:text-emerald-400"
+              }`}
+            >
+              {configMessage.text}
+            </p>
+          )}
           {demoActive && (
             <p className="mt-1.5 flex items-center gap-1.5 text-xs text-primary">
               <Sparkles className="h-3 w-3" />
@@ -298,6 +359,30 @@ export function SourcesStep() {
               <DriveTabContent setDriveFiles={setDriveFiles} driveFileCount={driveFiles.length} />
             </TabsContent>
           </Tabs>
+
+          {expectedFileNames.length > 0 && (
+            <div className="mt-4 rounded-md border border-primary/30 bg-primary/5 p-3 text-xs">
+              <p className="font-medium">Files named by imported config</p>
+              <ul className="mt-1 space-y-1 font-mono text-muted-foreground">
+                {expectedFileNames.map((name) => {
+                  const selected = [...localFiles.map((file) => file.name), ...driveFiles.map((file) => file.name)].includes(name);
+                  return (
+                    <li key={name}>
+                      {name} — {selected ? "selected" : "select this file"}
+                    </li>
+                  );
+                })}
+              </ul>
+              {totalFiles > 0 &&
+                [...localFiles, ...driveFiles].some(
+                  (file) => !expectedFileNames.includes(file.name),
+                ) && (
+                  <p className="mt-2 text-amber-700 dark:text-amber-400">
+                    A selected filename differs from the locked config. It is accepted; verify the source before running.
+                  </p>
+                )}
+            </div>
+          )}
 
           {totalFiles > 0 && (
             <div className="mt-5">
@@ -574,4 +659,3 @@ function ModeOption({
     </button>
   );
 }
-

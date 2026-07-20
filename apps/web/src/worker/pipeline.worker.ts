@@ -377,6 +377,7 @@ const api = {
   async runTargetedNanopore(
     job: TargetedNanoporeJob,
     onProgress?: (msg: PipelineProgressMsg) => void,
+    onLog?: (msg: PipelineLogMsg) => void,
   ): Promise<TargetedNanoporeOutcome> {
     if (job.driveFiles.length > 0 && !job.driveToken) throw new Error("Drive files require an OAuth token.");
     const auth = job.driveToken ? staticAuth(job.driveToken) : null;
@@ -399,6 +400,7 @@ const api = {
         totalBytes: p.totalBytes,
         recordsProcessed: p.recordsProcessed,
       }),
+      onLog: (event) => onLog?.(event),
     });
     const statsByRound: Record<string, (typeof result.stats extends Map<string, infer V> ? V : never)> = {};
     for (const [round, value] of result.stats) statsByRound[round] = value;

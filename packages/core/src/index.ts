@@ -179,6 +179,7 @@ export {
   type TargetedPipelineSettings,
   type TargetedPipelineRequest,
   type TargetedPipelineProgress,
+  type TargetedPipelineLogEvent,
   type TargetedPrimaryDropReason,
   type TargetedFileStats,
   type TargetedSiteRunStats,

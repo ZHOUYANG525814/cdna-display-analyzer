@@ -4,6 +4,7 @@
 //   - Combination_Enrichment_Matrix.csv (full-length peptide alias for NGS)
 //   - run_stats.json
 //   - QC_Summary_Report.txt  (built here, see buildQcReport)
+//   - locked_config.json     (all rerunnable settings; filenames only)
 //
 // All artifacts are emitted as separate browser downloads triggered by user
 // interaction; modern browsers will not let a single click produce multiple
@@ -12,14 +13,42 @@
 
 import type { PipelineOutcome } from "../worker/types";
 import { CDNA_METHODS, formatMethodsAsText } from "@cdna/core";
-import { useRunStore } from "../state/useRunStore";
+import {
+  useRunStore,
+  type CdnaLockedConfigImport,
+  type PipelineMode,
+  type RoundForm,
+} from "../state/useRunStore";
+import {
+  validateCdsPair,
+  validatePrimer,
+  validateProjectName,
+  validateReference,
+  validateRoundName,
+} from "../lib/validation";
 
 export const CDNA_EXPORT_FILES = [
   ["Master_Enrichment_Matrix.csv.gz", "Full peptide count, RPM and enrichment matrix"],
   ["Combination_Enrichment_Matrix.csv.gz", "Full-length peptide combinations; for short-read NGS the complete translated CDS is the combination key"],
   ["run_stats.json", "Per-round demultiplex and QC counts"],
   ["QC_Summary_Report.txt", "Human-readable summary, methods and column reference"],
+  ["locked_config.json", "Re-runnable settings without sequencing files, paths, Drive IDs or credentials"],
 ] as const;
+
+export interface CdnaExportSnapshot {
+  projectName: string;
+  pipelineMode: PipelineMode;
+  referenceSeq: string;
+  localFiles: File[];
+  driveFiles: Array<{ id: string; name: string; sizeBytes: number | null }>;
+  expectedFileNames: string[];
+  rounds: RoundForm[];
+  filterStop: boolean;
+  useWasm: boolean;
+  minMeanPhred: number;
+  minMeanPhredCds: number;
+  pseudocount: number;
+}
 
 function downloadBlob(blob: Blob, filename: string): void {
   const url = URL.createObjectURL(blob);
@@ -75,6 +104,170 @@ export async function exportOutcome(
     new Blob([buildQcReport(outcome, opts.projectName)], { type: "text/plain;charset=utf-8" }),
     `${base}_QC_Summary_Report.txt`,
   );
+  downloadBlob(
+    new Blob([JSON.stringify(buildCdnaLockedConfig(useRunStore.getState()), null, 2)], {
+      type: "application/json",
+    }),
+    `${base}_locked_config.json`,
+  );
+}
+
+/** Build a reproducible NGS configuration without retaining any read bytes,
+ * local paths, Drive IDs, file sizes, timestamps or credentials. */
+export function buildCdnaLockedConfig(snapshot: CdnaExportSnapshot) {
+  const actualMultiplexedNames = [
+    ...snapshot.localFiles.map((file) => file.name),
+    ...snapshot.driveFiles.map((file) => file.name),
+  ];
+  return {
+    schemaVersion: "cdna-display-config/v1",
+    calculationModel: "rpm-pseudocount-v1",
+    pseudocountUnit: "RPM",
+    project: snapshot.projectName,
+    pipelineMode: snapshot.pipelineMode,
+    reference: snapshot.referenceSeq,
+    sources: {
+      expectedFileNames:
+        snapshot.pipelineMode === "multiplexed"
+          ? actualMultiplexedNames.length > 0
+            ? actualMultiplexedNames
+            : snapshot.expectedFileNames
+          : [],
+    },
+    rounds: snapshot.rounds.map((round) => ({
+      name: round.name,
+      fwPrimer: round.fwPrimer,
+      rvPrimer: round.rvPrimer,
+      cdsStart: round.cdsStart,
+      cdsEnd: round.cdsEnd,
+      expectedFileName:
+        snapshot.pipelineMode === "per-round"
+          ? round.file?.name ?? round.driveRef?.name ?? round.expectedFileName
+          : null,
+    })),
+    settings: {
+      filterStop: snapshot.filterStop,
+      useWasm: snapshot.useWasm,
+      minMeanPhred: snapshot.minMeanPhred,
+      minMeanPhredCds: snapshot.minMeanPhredCds,
+      pseudocount: snapshot.pseudocount,
+    },
+    fixedSafeguards: { adaptivePrimerMatching: true },
+  };
+}
+
+export function parseCdnaLockedConfig(text: string): CdnaLockedConfigImport {
+  let raw: unknown;
+  try {
+    raw = JSON.parse(text);
+  } catch {
+    throw new Error("Locked config is not valid JSON.");
+  }
+  const root = record(raw, "Locked config");
+  if (root.schemaVersion !== "cdna-display-config/v1") {
+    throw new Error("Unsupported locked config schema.");
+  }
+  if (root.calculationModel !== "rpm-pseudocount-v1") {
+    throw new Error("Unsupported enrichment calculation model.");
+  }
+  if (root.pseudocountUnit !== "RPM") {
+    throw new Error("Unsupported pseudocount unit.");
+  }
+
+  const projectName = stringValue(root.project, "project");
+  const projectError = validateProjectName(projectName);
+  if (projectError) throw new Error(projectError);
+
+  if (root.pipelineMode !== "multiplexed" && root.pipelineMode !== "per-round") {
+    throw new Error("pipelineMode must be multiplexed or per-round.");
+  }
+  const pipelineMode = root.pipelineMode;
+  const referenceSeq = stringValue(root.reference, "reference");
+  const referenceError = validateReference(referenceSeq);
+  if (referenceError) throw new Error(referenceError);
+
+  const sources = record(root.sources, "sources");
+  if (!Array.isArray(sources.expectedFileNames) || sources.expectedFileNames.length > 1_000) {
+    throw new Error("sources.expectedFileNames is invalid or exceeds 1,000 files.");
+  }
+  const expectedFileNames = sources.expectedFileNames.map((value, index) =>
+    fastqFilename(value, `sources.expectedFileNames[${index}]`),
+  );
+  if (pipelineMode === "multiplexed" && expectedFileNames.length === 0) {
+    throw new Error("Multiplexed locked config must include at least one expected FASTQ filename.");
+  }
+  if (pipelineMode === "per-round" && expectedFileNames.length !== 0) {
+    throw new Error("Per-round locked config cannot contain multiplexed source filenames.");
+  }
+
+  if (!Array.isArray(root.rounds) || root.rounds.length === 0 || root.rounds.length > 100) {
+    throw new Error("Locked rounds are missing or exceed the supported limit.");
+  }
+  const rounds = root.rounds.map((value, index) => {
+    const round = record(value, `rounds[${index}]`);
+    const name = stringValue(round.name, `rounds[${index}].name`);
+    const nameError = validateRoundName(name);
+    if (nameError) throw new Error(`Round ${index}: ${nameError}`);
+    const fwPrimer = stringValue(round.fwPrimer, `rounds[${index}].fwPrimer`);
+    const fwError = validatePrimer(fwPrimer, "Forward");
+    if (fwError) throw new Error(`Round ${index}: ${fwError}`);
+    const rvPrimer = stringValue(round.rvPrimer, `rounds[${index}].rvPrimer`);
+    const rvError = validatePrimer(rvPrimer, "Reverse");
+    if (rvError) throw new Error(`Round ${index}: ${rvError}`);
+    const cdsStart = integer(round.cdsStart, `rounds[${index}].cdsStart`);
+    const cdsEnd = integer(round.cdsEnd, `rounds[${index}].cdsEnd`);
+    const cdsError = validateCdsPair(cdsStart, cdsEnd);
+    if (cdsError) throw new Error(`Round ${index}: ${cdsError}`);
+    let expectedFileName: string | null = null;
+    if (round.expectedFileName != null) {
+      expectedFileName = fastqFilename(
+        round.expectedFileName,
+        `rounds[${index}].expectedFileName`,
+      );
+    }
+    if (pipelineMode === "per-round" && expectedFileName == null) {
+      throw new Error(`Round ${index} is missing its expected FASTQ filename.`);
+    }
+    if (pipelineMode === "multiplexed" && expectedFileName != null) {
+      throw new Error(`Round ${index} cannot contain a per-round FASTQ filename.`);
+    }
+    return { name, fwPrimer, rvPrimer, cdsStart, cdsEnd, expectedFileName };
+  });
+  if (new Set(rounds.map((round) => round.name)).size !== rounds.length) {
+    throw new Error("Round names must be unique.");
+  }
+
+  const sourceSettings = record(root.settings, "settings");
+  const settings = {
+    filterStop: booleanValue(sourceSettings.filterStop, "settings.filterStop"),
+    useWasm: booleanValue(sourceSettings.useWasm, "settings.useWasm"),
+    minMeanPhred: bounded(sourceSettings.minMeanPhred, "settings.minMeanPhred", 0, 40),
+    minMeanPhredCds: bounded(
+      sourceSettings.minMeanPhredCds,
+      "settings.minMeanPhredCds",
+      0,
+      40,
+    ),
+    pseudocount: bounded(
+      sourceSettings.pseudocount,
+      "settings.pseudocount",
+      Number.MIN_VALUE,
+      100,
+    ),
+  };
+  const safeguards = record(root.fixedSafeguards, "fixedSafeguards");
+  if (safeguards.adaptivePrimerMatching !== true) {
+    throw new Error("Unsupported adaptive primer-matching safeguard.");
+  }
+
+  return {
+    projectName,
+    pipelineMode,
+    referenceSeq,
+    expectedFileNames,
+    rounds,
+    settings,
+  };
 }
 
 /** Stream-gzip a Blob via the native CompressionStream API.
@@ -93,6 +286,53 @@ async function gzipBlob(blob: Blob): Promise<Blob> {
 
 function sanitizeFilename(s: string): string {
   return s.replace(/[^A-Za-z0-9._-]+/g, "_").slice(0, 80);
+}
+
+function record(value: unknown, label: string): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`${label} must be an object.`);
+  }
+  return value as Record<string, unknown>;
+}
+
+function stringValue(value: unknown, label: string): string {
+  if (typeof value !== "string" || value.length === 0) {
+    throw new Error(`${label} must be a non-empty string.`);
+  }
+  return value;
+}
+
+function integer(value: unknown, label: string): number {
+  if (typeof value !== "number" || !Number.isInteger(value)) {
+    throw new Error(`${label} must be an integer.`);
+  }
+  return value;
+}
+
+function bounded(value: unknown, label: string, min: number, max: number): number {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < min || value > max) {
+    throw new Error(`${label} is outside supported limits.`);
+  }
+  return value;
+}
+
+function booleanValue(value: unknown, label: string): boolean {
+  if (value !== true && value !== false) throw new Error(`${label} must be boolean.`);
+  return value;
+}
+
+function fastqFilename(value: unknown, label: string): string {
+  const name = stringValue(value, label);
+  if (name.length > 255 || !/\.(fastq|fq)$/i.test(name)) {
+    throw new Error(`${label} must be a .fastq or .fq filename.`);
+  }
+  // Browser File.name has no path component. Enforce the same property for
+  // imported hints so a config can never smuggle in a local or remote path.
+  // eslint-disable-next-line no-control-regex
+  if (name === "." || name === ".." || /[\x00-\x1f<>:"/\\|?*]/.test(name)) {
+    throw new Error(`${label} contains an unsafe filename.`);
+  }
+  return name;
 }
 
 // QC report layout follows 01_scripts/app.py:421-525 — section 1 (per-round
