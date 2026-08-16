@@ -30,7 +30,7 @@ export function ResultsStep() {
   const snapshot: TargetedExportSnapshot = { projectName: s.projectName, referenceSeq: s.referenceSeq, cdsStart: s.cdsStart, cdsEnd: s.cdsEnd, cdsStrand: s.cdsStrand, sites: s.sites, rounds: s.rounds, settings: s.settings, reportHaplotypes: s.reportHaplotypes, startedAt: s.runState.startedAt, finishedAt: s.runState.finishedAt };
   const downloadAll = async () => { setExporting(true); try { await exportTargetedOutcome(o, snapshot); } finally { setExporting(false); } };
 
-  return <div className="mx-auto flex max-w-6xl flex-col gap-6">
+  return <div className="nanopore-results mx-auto flex max-w-6xl flex-col gap-6">
     <div className="grid grid-cols-1 gap-4 md:grid-cols-4"><Stat label="Total reads" value={total.toLocaleString()} /><Stat label="Full-read QC" value={full.toLocaleString()} tone={full > 0 ? "success" : "warning"} /><Stat label="Full-QC yield" value={pct(full, total)} tone={full > 0 ? "success" : "warning"} /><Stat label="Callable target observations" value={callable.toLocaleString()} tone={callable > 0 ? "success" : "warning"} /></div>
 
     <Card><CardHeader><CardTitle className="flex items-center gap-2"><BarChart3 className="h-5 w-5 text-primary" />Filtering funnel</CardTitle><CardDescription>Sankey view of every read entering an exclusive whole-read outcome. Band width shows where throughput is being lost; target-level rescue remains separate.</CardDescription></CardHeader><CardContent><LazyMount minHeight={320}><TargetedFilterFunnelSankey outcome={o} /></LazyMount></CardContent></Card>

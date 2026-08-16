@@ -2,6 +2,23 @@
 @tailwind components;
 @tailwind utilities;
 
+/* Results has a single-column DOM for small desktop screens. Reorder only
+   the unique seven-column per-round yield table beside the funnel, before
+   science plots; conditional plot/table sections do not affect this rule. */
+.nanopore-results > * {
+  order: 2;
+}
+
+.nanopore-results > :first-child,
+.nanopore-results > :nth-child(2),
+.nanopore-results > div:has(table thead th:nth-child(7):last-child) {
+  order: 1;
+}
+
+.nanopore-results > :first-child {
+  order: 0;
+}
+
 /*
  * shadcn-style CSS variables — light theme only per design choice. Tuned to
  * a neutral white/slate palette that reads as a modern bioinformatics tool
