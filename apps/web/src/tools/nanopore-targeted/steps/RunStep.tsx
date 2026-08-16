@@ -5,6 +5,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Progress } from "@/components/ui/progress";
 import { Badge } from "@/components/ui/badge";
 import {
+  targetedInputErrors,
   useTargetedNanoporeStore,
   type TargetedLogEntry,
 } from "@/state/useTargetedNanoporeStore";
@@ -20,6 +21,7 @@ import {
   targetedZeroCoverage,
   zeroCoverageMessage,
 } from "@/lib/runGuards";
+import { QcSettingsPanel, targetedQcSettingsValid } from "./QcStep";
 
 const CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID as string | undefined;
 
@@ -33,6 +35,8 @@ const TAG_COLORS: Record<TargetedLogEntry["tag"], string> = {
 export function RunStep() {
   const s = useTargetedNanoporeStore();
   const running = s.runState.status === "running";
+  const configErrors = targetedInputErrors(s);
+  if (!targetedQcSettingsValid(s.settings)) configErrors.push("One or more QC/statistical settings are outside the supported range.");
   const uiSources = useMemo(() => {
     const local = s.rounds.flatMap((round) =>
       round.files.flatMap((source) =>
@@ -70,6 +74,12 @@ export function RunStep() {
 
   const run = useCallback(async () => {
     const current = useTargetedNanoporeStore.getState();
+    const validationErrors = targetedInputErrors(current);
+    if (!targetedQcSettingsValid(current.settings)) validationErrors.push("One or more QC/statistical settings are outside the supported range.");
+    if (validationErrors.length > 0) {
+      current.setRunState({ status: "error", error: validationErrors.join(" "), outcome: null });
+      return;
+    }
     current.setRunState({
       status: "running",
       error: null,
@@ -200,7 +210,7 @@ export function RunStep() {
         latest.setRunState({
           status: "error",
           error: message,
-          outcome,
+          outcome: null,
           finishedAt: Date.now(),
         });
         return;
@@ -262,7 +272,7 @@ export function RunStep() {
           ) : (
             <Button
               size="lg"
-              disabled={!s.qcLocked || uiSources.length === 0}
+              disabled={configErrors.length > 0 || uiSources.length === 0}
               onClick={() => void run()}
             >
               <Play className="mr-2 h-4 w-4" />
@@ -270,25 +280,23 @@ export function RunStep() {
             </Button>
           )}
         </CardHeader>
-        {showProgress && (
-          <CardContent className="space-y-4">
-            <OverallProgress sources={uiSources} />
-            <div className="space-y-2">
-              {uiSources.map((source, index) => (
-                <PerFileProgress
-                  key={`${source.name}:${index}`}
-                  index={index}
-                  name={source.name}
-                  totalBytes={source.totalBytes}
-                />
-              ))}
-            </div>
-            {s.runState.error && (
-              <p className="text-sm text-destructive">{s.runState.error}</p>
-            )}
-          </CardContent>
-        )}
+        <CardContent className="space-y-3">
+          {configErrors.length > 0 && <div className="rounded border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive">{configErrors.map((error) => <div key={error}>• {error}</div>)}</div>}
+          {s.runState.error && <div role="alert" className="rounded border border-destructive/50 bg-destructive/5 p-3 text-sm text-destructive">{s.runState.error}</div>}
+        </CardContent>
       </Card>
+
+      <Card><CardHeader><CardTitle className="text-base">Inputs and design</CardTitle><CardDescription>Confirm every round binding before starting the full run.</CardDescription></CardHeader><CardContent className="space-y-3 text-sm">
+        {s.rounds.map((round) => <div key={round.id} className="rounded border p-3"><strong>Round {round.round}</strong><div className="mt-1 space-y-1 text-xs text-muted-foreground">{round.files.map((source) => { const name = source.file?.name ?? source.driveRef?.name ?? source.expectedFileName ?? "Missing file"; const size = source.file?.size ?? source.driveRef?.sizeBytes; return <div key={source.id}>{name} · {isGzipFastq(name) ? "gzip" : "uncompressed"}{size != null ? ` · ${formatBytes(size)}` : ""}</div>; })}</div></div>)}
+        <div className="grid gap-2 rounded bg-muted/40 p-3 text-xs sm:grid-cols-2"><span>Reference: {s.referenceSeq.length.toLocaleString()} nt</span><span>CDS: {s.cdsStart}–{s.cdsEnd}</span><span>Targets: {s.sites.map((site) => aminoAcidTargetLabel(s.referenceSeq, s.cdsStart, site.ntStart).name).join(", ") || "none"}</span><span>Combination reporting: {s.sites.length >= 2 ? "enabled" : "not applicable"}</span></div>
+      </CardContent></Card>
+
+      <Card><CardHeader><CardTitle className="text-base">QC and statistics</CardTitle><CardDescription>Read Q ≥ {s.settings.minReadQ}; protected identity ≥ {(s.settings.minProtectedIdentity * 100).toFixed(0)}%; target base Q ≥ {s.settings.minTargetBaseQ}; Round 0 count ≥ {s.settings.minInputCountToScore}; pseudocount {s.settings.pseudocount} RPM; WASM alignment.</CardDescription></CardHeader><CardContent><details><summary className="cursor-pointer text-sm font-medium">Advanced settings and QC method</summary><div className="mt-4 space-y-4"><QcSettingsPanel /></div></details></CardContent></Card>
+
+      {showProgress && <Card><CardHeader><CardTitle className="text-base">Progress</CardTitle></CardHeader><CardContent className="space-y-4">
+        <OverallProgress sources={uiSources} />
+        <div className="space-y-2">{uiSources.map((source, index) => <PerFileProgress key={`${source.name}:${index}`} index={index} name={source.name} totalBytes={source.totalBytes} />)}</div>
+      </CardContent></Card>}
 
       <Card>
         <CardHeader className="flex flex-row items-center justify-between space-y-0">
@@ -306,7 +314,7 @@ export function RunStep() {
         <Button
           variant="outline"
           disabled={running}
-          onClick={() => s.setStep("qc")}
+          onClick={() => s.setStep("design")}
         >
           <ArrowLeft className="mr-2 h-4 w-4" />
           Back

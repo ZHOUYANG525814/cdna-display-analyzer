@@ -48,41 +48,6 @@ const api = {
       ...job.driveFiles.map((file) => new AutoDecompressFastqSource(new DriveFastqSource(file, auth!))),
     ];
     const names = [...job.localFiles.map((file) => file.name), ...job.driveFiles.map((file) => file.name)];
-    const preflightStartedAt = performance.now();
-    const preflight = await runTargetedNanoporePipeline({
-      sources,
-      sourceRoundIndices: job.sourceRoundIndices,
-      roundNames: job.roundNames,
-      reference: job.reference,
-      sites: job.sites,
-      settings: job.settings,
-      maxReadsPerSource: 200,
-      useWasmAlignment: job.useWasmAlignment ?? false,
-    });
-    const preflightReads = [...preflight.stats.values()].reduce((sum, stats) => sum + stats.total_reads, 0);
-    const preflightCallable = [...preflight.stats.values()].reduce(
-      (sum, stats) => sum + Object.values(stats.sites).reduce((siteSum, site) => siteSum + site.passed_qc, 0),
-      0,
-    );
-    const preflightUnique = [...preflight.dnaCounters.values()].reduce(
-      (sum, sites) => sum + [...sites.values()].reduce((siteSum, counter) => siteSum + counter.size, 0),
-      0,
-    );
-    const preflightSeconds = (performance.now() - preflightStartedAt) / 1000;
-    onLog?.({
-      tag: preflightCallable > 0 ? "info" : "warning",
-      text:
-        `Preflight · sampled=${preflightReads.toLocaleString()} reads · callableTargets=${preflightCallable.toLocaleString()} · ` +
-        `initialUniqueCodons=${preflightUnique.toLocaleString()} · ` +
-        `estimated=${preflightReads > 0 ? (preflightSeconds / preflightReads * 1_000_000).toFixed(1) : "n/a"} s/M reads · ` +
-        "parameters unchanged",
-    });
-    preflight.dnaCounters.clear();
-    preflight.haplotypeCounters.clear();
-    preflight.analyzer.perSiteRows.length = 0;
-    preflight.analyzer.haplotypeRows.length = 0;
-    preflight.analyzer.perSiteCsvParts.length = 0;
-    preflight.analyzer.haplotypeCsvParts.length = 0;
     const result = await runTargetedNanoporePipeline({
       sources,
       sourceRoundIndices: job.sourceRoundIndices,

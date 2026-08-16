@@ -23,14 +23,14 @@ export function ResultsStep() {
   const first = o?.roundNames[0] ?? "";
   const chartRows = useMemo(() => o ? targetedRowsToChartRows(o.perSiteRowsForViz, o.roundNames, s.settings.pseudocount).sort((a, b) => (b.centered[last] ?? -Infinity) - (a.centered[last] ?? -Infinity)) : [], [o, last, s.settings.pseudocount]);
   const top20 = useMemo(() => o ? [...o.perSiteRowsForViz].filter((row) => Number.isFinite(Number(row[`Centered_Enrichment_${last}_vs_${first}`]))).sort((a, b) => Number(b[`Centered_Enrichment_${last}_vs_${first}`]) - Number(a[`Centered_Enrichment_${last}_vs_${first}`])).slice(0, 20) : [], [o, last, first]);
-  if (!o) return <div className="space-y-4"><p>No completed run is available.</p><Button onClick={() => s.setStep("run")}>Go to Run</Button></div>;
+  if (!o) return <div className="space-y-4"><p>No completed run is available.</p><Button onClick={() => s.setStep("analyze")}>Go to Analyze</Button></div>;
   const total = o.roundNames.reduce((n, r) => n + o.statsByRound[r]!.total_reads, 0);
   const full = o.roundNames.reduce((n, r) => n + o.statsByRound[r]!.full_qc_passed, 0);
   const callable = o.roundNames.reduce((n, r) => n + o.siteNames.reduce((m, site) => m + o.statsByRound[r]!.sites[site]!.passed_qc, 0), 0);
   const snapshot: TargetedExportSnapshot = { projectName: s.projectName, referenceSeq: s.referenceSeq, cdsStart: s.cdsStart, cdsEnd: s.cdsEnd, cdsStrand: s.cdsStrand, sites: s.sites, rounds: s.rounds, settings: s.settings, reportHaplotypes: s.reportHaplotypes, startedAt: s.runState.startedAt, finishedAt: s.runState.finishedAt };
   const downloadAll = async () => { setExporting(true); try { await exportTargetedOutcome(o, snapshot); } finally { setExporting(false); } };
 
-  return <div className="mx-auto max-w-6xl space-y-6">
+  return <div className="mx-auto flex max-w-6xl flex-col gap-6">
     <div className="grid grid-cols-1 gap-4 md:grid-cols-4"><Stat label="Total reads" value={total.toLocaleString()} /><Stat label="Full-read QC" value={full.toLocaleString()} tone={full > 0 ? "success" : "warning"} /><Stat label="Full-QC yield" value={pct(full, total)} tone={full > 0 ? "success" : "warning"} /><Stat label="Callable target observations" value={callable.toLocaleString()} tone={callable > 0 ? "success" : "warning"} /></div>
 
     <Card><CardHeader><CardTitle className="flex items-center gap-2"><BarChart3 className="h-5 w-5 text-primary" />Filtering funnel</CardTitle><CardDescription>Sankey view of every read entering an exclusive whole-read outcome. Band width shows where throughput is being lost; target-level rescue remains separate.</CardDescription></CardHeader><CardContent><LazyMount minHeight={320}><TargetedFilterFunnelSankey outcome={o} /></LazyMount></CardContent></Card>
@@ -53,7 +53,7 @@ export function ResultsStep() {
 
     <MethodsCard doc={TARGETED_NANOPORE_METHODS} pseudocount={s.settings.pseudocount} settings={methodSettings(snapshot)} libraryMedian={o.libraryMedianFitness} hitCounts={o.hitCounts} />
 
-    <div className="flex flex-wrap justify-between gap-2"><Button variant="outline" onClick={() => s.setStep("run")}><ArrowLeft className="mr-2 h-4 w-4" />Back to run</Button><Button onClick={s.prepareNextRun}><RefreshCw className="mr-2 h-4 w-4" />New run</Button></div><p className="text-center text-xs text-muted-foreground">New run clears the project, targets, settings, sequencing-file hints and results, then restores the recommended defaults.</p>
+    <div className="flex flex-wrap justify-between gap-2"><Button variant="outline" onClick={() => s.setStep("analyze")}><ArrowLeft className="mr-2 h-4 w-4" />Back to Analyze</Button><Button onClick={s.prepareNextRun}><RefreshCw className="mr-2 h-4 w-4" />New run</Button></div><p className="text-center text-xs text-muted-foreground">New run clears the project, targets, settings, sequencing-file hints and results, then restores the recommended defaults.</p>
   </div>;
 }
 

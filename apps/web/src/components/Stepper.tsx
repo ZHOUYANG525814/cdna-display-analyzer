@@ -14,6 +14,7 @@ export interface StepperProps {
    *  the cdna-display run store (legacy behaviour, single-tool app). */
   useCurrentStep?: () => string;
   useSetStep?: () => (stepId: string) => void;
+  useRunStatus?: () => string;
 }
 
 function fallbackUseCurrentStep(): string {
@@ -24,16 +25,19 @@ function fallbackUseSetStep(): (s: string) => void {
   return useRunStore((s) => s.setStep);
 }
 
+function fallbackUseRunStatus(): string {
+  return useRunStore((s) => s.status);
+}
+
 export function Stepper({
   steps,
   useCurrentStep = fallbackUseCurrentStep,
   useSetStep = fallbackUseSetStep,
+  useRunStatus = fallbackUseRunStatus,
 }: StepperProps) {
   const currentStep = useCurrentStep();
   const setStep = useSetStep();
-  // Status badge still comes from the cdna-display store; harmless when
-  // running the Nanopore tool — the variable just stays "idle".
-  const status = useRunStore((s) => s.status);
+  const status = useRunStatus();
   const currentIdx = steps.findIndex((s) => s.id === currentStep);
 
   return (
@@ -45,7 +49,7 @@ export function Stepper({
           const isLast = i === steps.length - 1;
           const done = i < currentIdx || (isLast && status === "done");
           const active = step.id === currentStep;
-          const reachable = i <= currentIdx;
+          const reachable = status !== "running" && i <= currentIdx;
           return (
             <li key={step.id} className="flex flex-1 items-center">
               <button

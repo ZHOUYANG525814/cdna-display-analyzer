@@ -1,5 +1,5 @@
 import { useRef, useState } from "react";
-import { ArrowLeft, ArrowRight, Plus, Trash2, FileUp, X, Cloud } from "lucide-react";
+import { ArrowLeft, ArrowRight, FileUp, X, Cloud } from "lucide-react";
 import { DriveAuthProvider } from "@/adapters/DriveAuthProvider";
 import { showDrivePicker } from "@/adapters/DrivePicker";
 import type { CdnaRoundSource, DriveFileRef } from "@/state/useRunStore";
@@ -21,6 +21,7 @@ import {
   validateReference,
   validateRoundName,
 } from "@/lib/validation";
+import { PreviewStep } from "./PreviewStep";
 
 export function ConfigureStep() {
   const {
@@ -28,18 +29,6 @@ export function ConfigureStep() {
     setReferenceSeq,
     rounds,
     updateRound,
-    addRound,
-    removeRound,
-    filterStop,
-    setFilterStop,
-    useWasm,
-    setUseWasm,
-    minMeanPhred,
-    setMinMeanPhred,
-    minMeanPhredCds,
-    setMinMeanPhredCds,
-    pseudocount,
-    setPseudocount,
     pipelineMode,
     goPrev,
     goNext,
@@ -84,16 +73,10 @@ export function ConfigureStep() {
       // either local file OR drive ref.
       (!perRound || r.sources.some((source) => source.file != null || source.driveRef != null)),
   );
-  const settingsValid =
-    Number.isFinite(minMeanPhred) &&
-    minMeanPhred >= 0 &&
-    minMeanPhred <= 40 &&
-    Number.isFinite(minMeanPhredCds) &&
-    minMeanPhredCds >= 0 &&
-    minMeanPhredCds <= 40 &&
-    Number.isFinite(pseudocount) &&
-    pseudocount > 0 &&
-    pseudocount <= 100;
+  const allRoundsHaveCds = rounds.every((round) =>
+    round.cdsStart != null && round.cdsEnd != null && round.cdsEnd >= round.cdsStart &&
+    (round.cdsEnd - round.cdsStart + 1) % 3 === 0
+  );
 
   return (
     <div className="mx-auto max-w-4xl space-y-6">
@@ -101,7 +84,7 @@ export function ConfigureStep() {
         <CardHeader>
           <CardTitle>Reference sequence</CardTitle>
           <CardDescription>
-            5'→3' DNA. Used in the next step to align each round's primers and pick CDS bounds.
+            5'→3' DNA. Used below to align each round's primers and pick CDS bounds.
             Non-ACGTN characters are stripped automatically.
           </CardDescription>
         </CardHeader>
@@ -156,17 +139,9 @@ export function ConfigureStep() {
               )}
             </CardTitle>
             <CardDescription>
-              Define one round per selection step. Round 0 is the unselected library by convention.
+              Confirm each primer pair. Round 0 is the unselected library by convention.
             </CardDescription>
           </div>
-          <Button
-            size="sm"
-            variant="outline"
-            onClick={addRound}
-            disabled={rounds.length >= LIMITS.ROUND_COUNT_MAX}
-          >
-            <Plus className="mr-1 h-3.5 w-3.5" /> Add round
-          </Button>
         </CardHeader>
         <CardContent className="space-y-4">
           {rounds.map((r, i) => (
@@ -195,14 +170,6 @@ export function ConfigureStep() {
                     })()}
                   </div>
                 </div>
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  onClick={() => removeRound(r.id)}
-                  disabled={rounds.length <= 1}
-                >
-                  <Trash2 className="h-3.5 w-3.5" />
-                </Button>
               </div>
               <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
                 <div>
@@ -246,15 +213,6 @@ export function ConfigureStep() {
                   })()}
                 </div>
               </div>
-              {perRound && (
-                <RoundFilePicker
-                  sources={r.sources}
-                  onChange={(sources) => updateRound(r.id, { sources })}
-                />
-              )}
-              <p className="text-xs text-muted-foreground">
-                CDS Start / End are set in the next step, where you see the aligned region.
-              </p>
             </div>
           ))}
           {duplicateRoundNames && (
@@ -275,87 +233,7 @@ export function ConfigureStep() {
         </CardContent>
       </Card>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>Filters & settings</CardTitle>
-          <CardDescription>
-            Defaults match the Illumina Q≥20 standard. Lower the thresholds
-            only for known-noisy datasets — anything below Q15 is unreliable.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-            <div className="space-y-1.5">
-              <Label htmlFor="qread" className="text-xs">
-                Min mean read Q
-              </Label>
-              <Input
-                id="qread"
-                type="number"
-                value={minMeanPhred}
-                onChange={(e) => setMinMeanPhred(Number(e.target.value) || 0)}
-                className="font-mono text-xs"
-                min={0}
-                max={40}
-              />
-            </div>
-            <div className="space-y-1.5">
-              <Label htmlFor="qcds" className="text-xs">
-                Min mean CDS-region Q
-              </Label>
-              <Input
-                id="qcds"
-                type="number"
-                value={minMeanPhredCds}
-                onChange={(e) => setMinMeanPhredCds(Number(e.target.value) || 0)}
-                className="font-mono text-xs"
-                min={0}
-                max={40}
-              />
-            </div>
-            <div className="space-y-1.5">
-              <Label htmlFor="pseudocount" className="text-xs">
-                Enrichment pseudocount (RPM)
-              </Label>
-              <Input
-                id="pseudocount"
-                type="number"
-                value={pseudocount}
-                onChange={(e) => setPseudocount(Number(e.target.value))}
-                className="font-mono text-xs"
-                min={Number.MIN_VALUE}
-                max={100}
-                step={0.5}
-                list="pseudocount-options"
-              />
-              <datalist id="pseudocount-options">
-                <option value="0.5">Recommended</option>
-                <option value="1">Historical RPM+1</option>
-              </datalist>
-              <p className="text-[11px] text-muted-foreground">
-                Added after RPM normalization. Recommended: 0.5 RPM; use 1.0 to reproduce RPM+1 scores.
-              </p>
-            </div>
-          </div>
-          {/* The "Adaptive" toggle was removed in Phase 6.11: when disabled,
-              the engine ran an exact 10-bp Rv-anchor scan that produced more
-              false positives than real indel detections (any chance match of
-              the 10-mer inside the ROI dropped the read; sequencing errors in
-              the anchor silently disabled the check on cleaner reads). The
-              engine still honours `adaptive` for desktop-Python parity; the
-              dispatcher in RunStep hardcodes it to true. */}
-          <ToggleRow
-            label="Discard CDS with premature stop codons"
-            value={filterStop}
-            onChange={setFilterStop}
-          />
-          <ToggleRow
-            label="Use WASM hot path (recommended)"
-            value={useWasm}
-            onChange={setUseWasm}
-          />
-        </CardContent>
-      </Card>
+      {refValid && allRoundsValid ? <PreviewStep embedded /> : null}
 
       <div className="flex justify-between">
         <Button variant="ghost" onClick={goPrev}>
@@ -363,42 +241,20 @@ export function ConfigureStep() {
         </Button>
         <Button
           size="lg"
-          disabled={!refValid || !allRoundsValid || !settingsValid}
+          disabled={!refValid || !allRoundsValid || !allRoundsHaveCds}
           onClick={goNext}
         >
-          Continue to Preview <ArrowRight className="ml-1.5 h-4 w-4" />
+          Continue to Analyze <ArrowRight className="ml-1.5 h-4 w-4" />
         </Button>
       </div>
     </div>
   );
 }
 
-function ToggleRow({
-  label,
-  value,
-  onChange,
-}: {
-  label: string;
-  value: boolean;
-  onChange: (v: boolean) => void;
-}) {
-  return (
-    <label className="flex cursor-pointer items-center gap-3 text-sm">
-      <input
-        type="checkbox"
-        checked={value}
-        onChange={(e) => onChange(e.target.checked)}
-        className="h-4 w-4 rounded border-input text-primary focus:ring-1 focus:ring-ring"
-      />
-      <span>{label}</span>
-    </label>
-  );
-}
-
 const CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID as string | undefined;
 const API_KEY = import.meta.env.VITE_GOOGLE_API_KEY as string | undefined;
 
-function RoundFilePicker({
+export function RoundFilePicker({
   sources,
   onChange,
 }: {
@@ -467,11 +323,10 @@ function RoundFilePicker({
     }
     const auth = new DriveAuthProvider({ clientId: CLIENT_ID });
     if (!auth.isSignedIn()) {
-      // Triggering OAuth from Configure would reload the page and wipe all
-      // the primer/CDS state the user just typed. Instead, send them back
-      // to Sources to sign in there first.
+      // Triggering OAuth here would reload the page. Send users back to
+      // Inputs, where Drive authentication and file binding belong.
       setError(
-        "You're not signed in to Google Drive yet — sign in via the Sources step (Drive tab) first, then come back here to pick files.",
+        "You're not signed in to Google Drive yet — sign in from Inputs first, then pick the round file.",
       );
       return;
     }
@@ -524,7 +379,7 @@ function RoundFilePicker({
             title={
               driveSignedIn
                 ? "Pick a FASTQ from your Google Drive"
-                : "Sign in via Sources → Drive tab first to enable Drive picking"
+                : "Sign in from Inputs first to enable Drive picking"
             }
           >
             <Cloud className="mr-1.5 h-3.5 w-3.5" />

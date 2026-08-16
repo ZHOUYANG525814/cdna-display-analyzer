@@ -47,7 +47,7 @@ describe("New run resets", () => {
       log: state.log,
       error: state.errorMessage,
     }).toEqual({
-      step: "sources",
+      step: "inputs",
       project: "",
       files: 0,
       expectedFiles: [],

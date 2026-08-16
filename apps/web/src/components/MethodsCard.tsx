@@ -46,6 +46,7 @@ import type { MethodsDocument } from "@cdna/core";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 
 interface Props {
+  className?: string;
   doc: MethodsDocument;
   settings?: ReadonlyArray<{ label: string; value: string }>;
   libraryMedian?: Record<string, number>;
@@ -57,6 +58,7 @@ interface Props {
 }
 
 export function MethodsCard({
+  className,
   doc,
   settings,
   libraryMedian,
@@ -67,7 +69,7 @@ export function MethodsCard({
   const [open, setOpen] = useState(defaultOpen);
 
   return (
-    <Card>
+    <Card className={className}>
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}

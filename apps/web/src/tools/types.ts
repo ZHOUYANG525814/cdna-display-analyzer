@@ -40,6 +40,10 @@ export interface Tool {
   useCurrentStep?: () => string;
   /** Hook returning a setter for the active step id. Drives stepper click-back. */
   useSetStep?: () => (stepId: string) => void;
+  /** Hook returning this tool's run status for the shared stepper. */
+  useRunStatus?: () => string;
+  /** Non-hook lookup used by app-shell navigation guards. */
+  isRunning?: () => boolean;
   /** Release lazy Worker/runtime resources when switching away from a tool. */
   dispose?: () => void;
 }

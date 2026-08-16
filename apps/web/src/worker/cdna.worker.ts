@@ -53,36 +53,6 @@ const api = {
       ),
     ];
     const names = [...job.localFiles.map((file) => file.name), ...job.driveFiles.map((file) => file.name)];
-    const preflightStartedAt = performance.now();
-    const preflight = await runPipeline({
-      sources,
-      rounds: job.rounds,
-      settings: job.settings,
-      pseudocount: job.pseudocount,
-      useWasm: job.useWasm,
-      compactAnalyzer: true,
-      maxReadsPerSource: 200,
-      ...(job.mode === "per-round" && job.sourceRoundIndices
-        ? { sourceRoundIndices: job.sourceRoundIndices }
-        : {}),
-    });
-    const preflightReads = [...preflight.stats.values()].reduce(
-      (sum, stats) => sum + stats.total_assigned,
-      preflight.globalUnassigned,
-    );
-    const preflightPassed = [...preflight.stats.values()].reduce((sum, stats) => sum + stats.passed_qc, 0);
-    const preflightUnique = [...preflight.dnaCounters.values()].reduce((sum, counter) => sum + counter.size, 0);
-    const preflightSeconds = (performance.now() - preflightStartedAt) / 1000;
-    onLog?.({
-      tag: preflightPassed > 0 ? "info" : "warning",
-      text:
-        `Preflight · sampled=${preflightReads.toLocaleString()} reads · passedQC=${preflightPassed.toLocaleString()} · ` +
-        `initialUniqueDNA=${preflightUnique.toLocaleString()} · ` +
-        `estimated=${preflightReads > 0 ? (preflightSeconds / preflightReads * 1_000_000).toFixed(1) : "n/a"} s/M reads · ` +
-        "parameters unchanged",
-    });
-    preflight.dnaCounters.clear();
-    preflight.analyzer?.csvParts.splice(0);
     const result = await runPipeline({
       sources,
       rounds: job.rounds,

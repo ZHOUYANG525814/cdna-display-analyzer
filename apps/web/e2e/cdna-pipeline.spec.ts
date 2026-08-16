@@ -25,10 +25,9 @@ test("runs a 10k-read gzip multi-shard cDNA job end to end", async ({ page }) =>
   await expect(page.getByText("shard-b.fastq.gz")).toBeVisible();
 
   await page.getByRole("button", { name: /^Continue$/ }).click();
-  await page.getByRole("button", { name: /Continue to Preview/ }).click();
-  await expect(page.getByRole("button", { name: /Continue to Run/ })).toBeEnabled();
-  await page.getByRole("button", { name: /Continue to Run/ }).click();
-  await page.getByRole("button", { name: /^Start$/ }).click();
+  await expect(page.getByRole("button", { name: /Continue to Analyze/ })).toBeEnabled();
+  await page.getByRole("button", { name: /Continue to Analyze/ }).click();
+  await page.getByRole("button", { name: /^Run analysis$/ }).click();
   await expect(page.getByRole("heading", { name: "Downloads" })).toBeVisible({ timeout: 240_000 });
   await expect(page.getByText("10,000", { exact: true }).first()).toBeVisible();
 });
@@ -46,10 +45,9 @@ test("can cancel a cDNA worker and run again with the same gzip shards", async (
     { name: "rerun.fastq.gz", mimeType: "application/gzip", buffer: compressed },
   ]);
   await page.getByRole("button", { name: /^Continue$/ }).click();
-  await page.getByRole("button", { name: /Continue to Preview/ }).click();
-  await page.getByRole("button", { name: /Continue to Run/ }).click();
+  await page.getByRole("button", { name: /Continue to Analyze/ }).click();
 
-  await page.getByRole("button", { name: /^Start$/ }).click();
+  await page.getByRole("button", { name: /^Run analysis$/ }).click();
   await page.getByRole("button", { name: "Cancel" }).click();
   await expect(page.getByText("Cancelled.")).toBeVisible();
   await page.getByRole("button", { name: "Run again" }).click();

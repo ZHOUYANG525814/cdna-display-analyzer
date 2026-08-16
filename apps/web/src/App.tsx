@@ -8,11 +8,13 @@ import { useAppStore } from "@/state/useAppStore";
 import { tools, toolById } from "@/tools/registry";
 import type { Tool } from "@/tools/types";
 import { recordTelemetry } from "@/lib/telemetry";
+import { isMobileOrTablet, readDeviceSignals } from "@/lib/deviceSupport";
 
 export function App() {
   const activeToolId = useAppStore((s) => s.activeToolId);
   const setActiveTool = useAppStore((s) => s.setActiveTool);
   const registration = toolById(activeToolId);
+  const unsupportedDevice = isMobileOrTablet(readDeviceSignals());
   const [tool, setTool] = useState<Tool | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [homeRequest, setHomeRequest] = useState(0);
@@ -24,6 +26,7 @@ export function App() {
   }, [activeToolId]);
 
   useEffect(() => {
+    if (unsupportedDevice) return;
     let cancelled = false;
     setTool(null);
     setLoadError(null);
@@ -64,13 +67,24 @@ export function App() {
       },
     );
     return () => { cancelled = true; };
-  }, [registration]);
+  }, [registration, unsupportedDevice]);
 
-  // Logo click → jump back to the active tool's first step (Sources). Keeps
+  // Logo click → jump back to the active tool's Inputs step. Keeps
   // the user's data intact — this is navigation, not a reset. Lets a user
   // who clicked too far quickly get back without hunting through the stepper.
-  const goHome = () => setHomeRequest((request) => request + 1);
+  const confirmNavigation = () =>
+    !tool?.isRunning?.() || window.confirm("An analysis is running. Cancel it and leave this tool?");
+  const goHome = () => {
+    if (!confirmNavigation()) return;
+    if (tool?.isRunning?.()) tool.dispose?.();
+    setHomeRequest((request) => request + 1);
+  };
+  const changeTool = (id: string) => {
+    if (id !== activeToolId && confirmNavigation()) setActiveTool(id);
+  };
   const Icon = registration.icon;
+
+  if (unsupportedDevice) return <DesktopRequired />;
 
   return (
     <div className="min-h-screen bg-background">
@@ -86,7 +100,7 @@ export function App() {
             <h1 className="text-base font-semibold tracking-tight">{registration.name}</h1>
           </button>
           <div className="flex items-center gap-3">
-            <ToolSwitcher activeId={activeToolId} onChange={setActiveTool} />
+            <ToolSwitcher activeId={activeToolId} onChange={changeTool} />
             <span className="hidden text-xs text-muted-foreground sm:inline">
               Browser-only · no upload
             </span>
@@ -114,6 +128,7 @@ export function App() {
 function ToolRuntime({ tool, homeRequest }: { tool: Tool; homeRequest: number }) {
   const currentStep = tool.useCurrentStep?.();
   const setStep = tool.useSetStep?.();
+  const runStatus = tool.useRunStatus?.();
   const previousHomeRequest = useRef(homeRequest);
   useEffect(() => () => tool.dispose?.(), [tool]);
   useEffect(() => {
@@ -122,6 +137,15 @@ function ToolRuntime({ tool, homeRequest }: { tool: Tool; homeRequest: number })
       if (setStep && tool.steps.length > 0) setStep(tool.steps[0]!.id);
     }
   }, [homeRequest, setStep, tool.steps]);
+  useEffect(() => {
+    if (runStatus !== "running") return;
+    const warnBeforeUnload = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    window.addEventListener("beforeunload", warnBeforeUnload);
+    return () => window.removeEventListener("beforeunload", warnBeforeUnload);
+  }, [runStatus]);
   const ActiveStep =
     tool.steps.find((step) => step.id === currentStep)?.Component ?? tool.steps[0]!.Component;
   return (
@@ -130,11 +154,29 @@ function ToolRuntime({ tool, homeRequest }: { tool: Tool; homeRequest: number })
         steps={tool.steps}
         {...(tool.useCurrentStep ? { useCurrentStep: tool.useCurrentStep } : {})}
         {...(tool.useSetStep ? { useSetStep: tool.useSetStep } : {})}
+        {...(tool.useRunStatus ? { useRunStatus: tool.useRunStatus } : {})}
       />
       <main className="mx-auto max-w-7xl px-4 py-8">
         <ActiveStep />
       </main>
     </>
+  );
+}
+
+function DesktopRequired() {
+  return (
+    <div className="flex min-h-screen items-center justify-center bg-background px-6">
+      <main className="w-full max-w-lg rounded-xl border bg-card p-8 text-center shadow-sm">
+        <h1 className="text-xl font-semibold">Desktop browser required</h1>
+        <p className="mt-3 text-sm leading-6 text-muted-foreground">
+          This enrichment analysis tool runs only in a browser on a desktop or laptop computer.
+          Phones and tablets are not supported because large local FASTQ analysis requires desktop-class memory and file handling.
+        </p>
+        <p className="mt-3 text-xs text-muted-foreground">
+          Supported: current desktop Chrome/Chromium, Firefox, and Safari/WebKit.
+        </p>
+      </main>
+    </div>
   );
 }
 

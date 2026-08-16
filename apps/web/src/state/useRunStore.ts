@@ -16,7 +16,7 @@ export type StepId = string;
 // Ordering for the navigation helpers (goNext / goPrev). When a second tool
 // ships, lift this to be tool-aware (per-tool store or a context-provided
 // step list); for now, single-tool ordering lives here.
-export const STEP_ORDER: StepId[] = ["sources", "configure", "preview", "run", "results"];
+export const STEP_ORDER: StepId[] = ["inputs", "design", "analyze", "results"];
 
 export type RunStatus = "idle" | "running" | "done" | "error" | "cancelled";
 
@@ -180,8 +180,23 @@ function defaultRound(idx: number): RoundForm {
   };
 }
 
+function invalidatedRun(): Pick<RunState,
+  "status" | "progress" | "perSourceBytes" | "startedAt" | "finishedAt" | "log" | "outcome" | "errorMessage"
+> {
+  return {
+    status: "idle",
+    progress: null,
+    perSourceBytes: {},
+    startedAt: null,
+    finishedAt: null,
+    log: [],
+    outcome: null,
+    errorMessage: null,
+  };
+}
+
 export const useRunStore = create<RunState>((set, get) => ({
-  currentStep: "sources",
+  currentStep: "inputs",
 
   projectName: "",
   localFiles: [],
@@ -221,13 +236,14 @@ export const useRunStore = create<RunState>((set, get) => ({
     if (i > 0) set({ currentStep: STEP_ORDER[i - 1]! });
   },
 
-  setProjectName: (v) => set({ projectName: v }),
+  setProjectName: (v) => set({ projectName: v, ...invalidatedRun() }),
   setLocalFiles: (files) =>
     set({
       localFiles: files.slice(
         0,
         Math.max(0, LIMITS.FASTQ_FILES_MAX - get().driveFiles.length),
       ),
+      ...invalidatedRun(),
     }),
   setDriveFiles: (files) =>
     set({
@@ -235,27 +251,36 @@ export const useRunStore = create<RunState>((set, get) => ({
         0,
         Math.max(0, LIMITS.FASTQ_FILES_MAX - get().localFiles.length),
       ),
+      ...invalidatedRun(),
     }),
-  clearAllFiles: () => set({ localFiles: [], driveFiles: [] }),
+  clearAllFiles: () => set({ localFiles: [], driveFiles: [], ...invalidatedRun() }),
 
-  setReferenceSeq: (v) => set({ referenceSeq: v.toUpperCase().replace(/[^ACGTN]/g, "") }),
-  setRounds: (rounds) => set({ rounds }),
-  updateRound: (id, patch) =>
-    set({ rounds: get().rounds.map((r) => (r.id === id ? { ...r, ...patch } : r)) }),
+  setReferenceSeq: (v) => set({ referenceSeq: v.toUpperCase().replace(/[^ACGTN]/g, ""), previewResults: [], ...invalidatedRun() }),
+  setRounds: (rounds) => set({ rounds, previewResults: [], ...invalidatedRun() }),
+  updateRound: (id, patch) => {
+    const cdsOnly = Object.keys(patch).every((key) => key === "cdsStart" || key === "cdsEnd");
+    set({
+      rounds: get().rounds.map((r) => (r.id === id ? { ...r, ...patch } : r)),
+      ...(cdsOnly ? {} : { previewResults: [] }),
+      ...invalidatedRun(),
+    });
+  },
   addRound: () =>
     get().rounds.length < LIMITS.ROUND_COUNT_MAX
       ? set({
           rounds: [...get().rounds, defaultRound(get().rounds.length)],
+          previewResults: [],
+          ...invalidatedRun(),
         })
       : undefined,
-  removeRound: (id) => set({ rounds: get().rounds.filter((r) => r.id !== id) }),
-  setAdaptive: (v) => set({ adaptive: v }),
-  setFilterStop: (v) => set({ filterStop: v }),
-  setUseWasm: (v) => set({ useWasm: v }),
-  setPipelineMode: (m) => set({ pipelineMode: m }),
-  setMinMeanPhred: (v) => set({ minMeanPhred: v }),
-  setMinMeanPhredCds: (v) => set({ minMeanPhredCds: v }),
-  setPseudocount: (v) => set({ pseudocount: v }),
+  removeRound: (id) => set({ rounds: get().rounds.filter((r) => r.id !== id), previewResults: [], ...invalidatedRun() }),
+  setAdaptive: (v) => set({ adaptive: v, ...invalidatedRun() }),
+  setFilterStop: (v) => set({ filterStop: v, ...invalidatedRun() }),
+  setUseWasm: (v) => set({ useWasm: v, ...invalidatedRun() }),
+  setPipelineMode: (m) => set({ pipelineMode: m, previewResults: [], ...invalidatedRun() }),
+  setMinMeanPhred: (v) => set({ minMeanPhred: v, ...invalidatedRun() }),
+  setMinMeanPhredCds: (v) => set({ minMeanPhredCds: v, ...invalidatedRun() }),
+  setPseudocount: (v) => set({ pseudocount: v, ...invalidatedRun() }),
 
   setPreview: (estReadLen, results) =>
     set({ estimatedReadLength: estReadLen, previewResults: results }),
@@ -285,7 +310,7 @@ export const useRunStore = create<RunState>((set, get) => ({
   appendLog: (entry) => set((s) => ({ log: [...s.log, { ...entry, at: performance.now() }] })),
   loadLockedConfig: (config) =>
     set({
-      currentStep: "sources",
+      currentStep: "inputs",
       projectName: config.projectName,
       localFiles: [],
       driveFiles: [],
@@ -326,7 +351,7 @@ export const useRunStore = create<RunState>((set, get) => ({
 
   resetAll: () =>
     set({
-      currentStep: "sources",
+      currentStep: "inputs",
       projectName: "",
       localFiles: [],
       driveFiles: [],

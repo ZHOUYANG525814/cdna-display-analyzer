@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { FolderOpen, FileText, Cloud, X, ArrowRight, Sparkles, Layers, Files, FileUp } from "lucide-react";
+import { FolderOpen, FileText, Cloud, X, ArrowRight, Sparkles, Layers, Files, FileUp, Plus, Trash2 } from "lucide-react";
 import { useRunStore } from "@/state/useRunStore";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -19,6 +19,7 @@ import {
   validateFastqFileSync,
   validateProjectName,
 } from "@/lib/validation";
+import { RoundFilePicker } from "./ConfigureStep";
 
 const CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID as string | undefined;
 const API_KEY = import.meta.env.VITE_GOOGLE_API_KEY as string | undefined;
@@ -36,6 +37,9 @@ export function SourcesStep() {
     setReferenceSeq,
     setRounds,
     rounds,
+    updateRound,
+    addRound,
+    removeRound,
     setStep,
     pipelineMode,
     setPipelineMode,
@@ -44,6 +48,10 @@ export function SourcesStep() {
   } = useRunStore();
   const totalFiles = localFiles.length + driveFiles.length;
   const perRound = pipelineMode === "per-round";
+  const expectedMultiplexedComplete = totalFiles >= expectedFileNames.length;
+  const perRoundComplete = rounds.length >= 2 && rounds.every((round) =>
+    round.sources.length > 0 && round.sources.every((source) => source.file || source.driveRef),
+  );
   // Controlled Tabs: needs to be controlled (not `defaultValue`) so we can
   // auto-switch to "drive" after an OAuth return — otherwise DriveTabContent
   // doesn't mount and the pending picker action sits idle.
@@ -225,7 +233,7 @@ export function SourcesStep() {
           {demoActive && (
             <p className="mt-1.5 flex items-center gap-1.5 text-xs text-primary">
               <Sparkles className="h-3 w-3" />
-              Demo data loaded. Step through Configure → Preview → Run to see
+              Demo data loaded. Step through Design → Analyze to see
               a complete walkthrough. Highlight fades in 8s.
             </p>
           )}
@@ -259,31 +267,22 @@ export function SourcesStep() {
         </CardContent>
       </Card>
 
+      {!perRound && <Card><CardHeader className="flex flex-row items-start justify-between gap-3"><div><CardTitle>Selection rounds</CardTitle><CardDescription>Round 0 is the baseline. Multiplexed reads are assigned by the primer tags defined in Design.</CardDescription></div><Button size="sm" variant="outline" onClick={addRound} disabled={rounds.length >= LIMITS.ROUND_COUNT_MAX}><Plus className="mr-1 h-3.5 w-3.5" />Add round</Button></CardHeader><CardContent className="space-y-2">{rounds.map((round, index) => <div key={round.id} className="flex items-center justify-between rounded border p-3"><div className="flex items-center gap-2"><Badge variant="outline">#{index}</Badge><Input aria-label={`Round ${index} name`} className="h-8 w-44 font-mono text-xs" value={round.name} onChange={(event) => updateRound(round.id, { name: event.target.value })} /></div><Button size="sm" variant="ghost" disabled={rounds.length <= 2} onClick={() => removeRound(round.id)}><Trash2 className="h-3.5 w-3.5" /></Button></div>)}</CardContent></Card>}
+
       {perRound && (
-        <>
-          <Card className="border-primary/30 bg-primary/5">
-            <CardHeader>
-              <CardTitle className="text-base">FASTQ sources — configured per round</CardTitle>
-              <CardDescription>
-                In per-round mode, each round picks one or more technical FASTQ shards in the
-                <span className="font-medium"> Configure</span> step. If any
-                of those files live in Google Drive, sign in here first so
-                the next step's picker works without a redirect (otherwise
-                you'd lose the primer config you typed there).
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              <DriveTabContent
-                setDriveFiles={() => {
-                  /* per-round mode doesn't accumulate global drive files; the
-                     sign-in is the only thing we want here */
-                }}
-                driveFileCount={0}
-                signInOnly
-              />
-            </CardContent>
-          </Card>
-        </>
+        <Card>
+          <CardHeader className="flex flex-row items-start justify-between gap-3">
+            <div><CardTitle>Rounds and FASTQ sources</CardTitle><CardDescription>Round 0 is the baseline. Bind one or more technical shards to every round.</CardDescription></div>
+            <Button size="sm" variant="outline" onClick={addRound} disabled={rounds.length >= LIMITS.ROUND_COUNT_MAX}><Plus className="mr-1 h-3.5 w-3.5" />Add round</Button>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            {rounds.map((round, index) => <div key={round.id} className="space-y-3 rounded-lg border p-4">
+              <div className="flex items-center justify-between gap-3"><div className="flex items-center gap-2"><Badge variant="outline">#{index}</Badge><Input aria-label={`Round ${index} name`} className="h-8 w-44 font-mono text-xs" value={round.name} onChange={(event) => updateRound(round.id, { name: event.target.value })} /></div><Button size="sm" variant="ghost" disabled={rounds.length <= 2} onClick={() => removeRound(round.id)}><Trash2 className="h-3.5 w-3.5" /></Button></div>
+              <RoundFilePicker sources={round.sources} onChange={(sources) => updateRound(round.id, { sources })} />
+            </div>)}
+            <div className="rounded-md border bg-muted/30 p-3"><p className="mb-2 text-xs text-muted-foreground">Google Drive is optional. Sign in once before using a round's Drive picker.</p><DriveTabContent setDriveFiles={() => undefined} driveFileCount={0} signInOnly /></div>
+          </CardContent>
+        </Card>
       )}
 
       {!perRound && (
@@ -378,11 +377,13 @@ export function SourcesStep() {
                 A locked config does not store or verify sequencing-file identity.
               </p>
               <ul className="mt-1 space-y-1 font-mono text-muted-foreground">
-                {expectedFileNames.map((name) => {
-                  const selected = [...localFiles.map((file) => file.name), ...driveFiles.map((file) => file.name)].includes(name);
+                {expectedFileNames.map((name, index) => {
+                  const actualNames = [...localFiles.map((file) => file.name), ...driveFiles.map((file) => file.name)];
+                  const exact = actualNames.includes(name);
+                  const selected = exact || index < actualNames.length;
                   return (
                     <li key={name}>
-                      {name} — {selected ? "selected" : "select this file"}
+                      {name} — {selected ? exact ? "selected" : `slot filled by ${actualNames[index]}` : "select a file for this slot"}
                     </li>
                   );
                 })}
@@ -415,7 +416,7 @@ export function SourcesStep() {
                       <Badge variant="secondary">local</Badge>
                       <span className="truncate font-mono text-xs">{f.name}</span>
                     </div>
-                    <span className="text-xs text-muted-foreground">{formatBytes(f.size)}</span>
+                    <div className="flex items-center gap-2"><span className="text-xs text-muted-foreground">{formatBytes(f.size)}</span><Button aria-label={`Remove ${f.name}`} size="sm" variant="ghost" onClick={() => setLocalFiles(localFiles.filter((_, index) => index !== i))}><X className="h-3.5 w-3.5" /></Button></div>
                   </li>
                 ))}
                 {driveFiles.map((d) => (
@@ -424,9 +425,7 @@ export function SourcesStep() {
                       <Badge>drive</Badge>
                       <span className="truncate font-mono text-xs">{d.name}</span>
                     </div>
-                    <span className="text-xs text-muted-foreground">
-                      {d.sizeBytes != null ? formatBytes(d.sizeBytes) : "—"}
-                    </span>
+                    <div className="flex items-center gap-2"><span className="text-xs text-muted-foreground">{d.sizeBytes != null ? formatBytes(d.sizeBytes) : "—"}</span><Button aria-label={`Remove ${d.name}`} size="sm" variant="ghost" onClick={() => setDriveFiles(driveFiles.filter((file) => file.id !== d.id))}><X className="h-3.5 w-3.5" /></Button></div>
                   </li>
                 ))}
               </ul>
@@ -441,7 +440,8 @@ export function SourcesStep() {
           size="lg"
           disabled={
             validateProjectName(projectName) != null ||
-            (!perRound && totalFiles === 0)
+            rounds.length < 2 ||
+            (perRound ? !perRoundComplete : totalFiles === 0 || !expectedMultiplexedComplete)
           }
           onClick={goNext}
         >

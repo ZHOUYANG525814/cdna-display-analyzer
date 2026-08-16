@@ -95,7 +95,7 @@ export function ResultsStep() {
   };
 
   return (
-    <div className="mx-auto max-w-6xl space-y-6">
+    <div className="mx-auto flex max-w-6xl flex-col gap-6">
       <div className="grid grid-cols-1 gap-4 md:grid-cols-4">
         <Stat label="Total reads" value={totalReads.toLocaleString()} />
         <Stat label="Passed QC" value={totalPassed.toLocaleString()} tone={totalPassed > 0 ? "success" : "warning"} />
@@ -103,7 +103,7 @@ export function ResultsStep() {
         <Stat label="Unique peptides" value={topPeptides.totalRows.toLocaleString()} />
       </div>
 
-      <Card>
+      <Card className="order-5">
         <CardHeader className="flex flex-row items-center justify-between space-y-0">
           <div>
             <CardTitle>Downloads</CardTitle>
@@ -147,6 +147,7 @@ export function ResultsStep() {
           column definitions while looking at the dashboard. Default-
           collapsed so the dashboard's main viz stays above the fold. */}
       <MethodsCard
+        className="order-6"
         doc={CDNA_METHODS}
         pseudocount={state.pseudocount}
         settings={[
@@ -433,7 +434,7 @@ export function ResultsStep() {
         </Card>
       )}
 
-      <div className="flex justify-between">
+      <div className="order-7 flex justify-between">
         <Button variant="ghost" onClick={state.goPrev}>
           <ArrowLeft className="mr-1.5 h-4 w-4" /> Back
         </Button>

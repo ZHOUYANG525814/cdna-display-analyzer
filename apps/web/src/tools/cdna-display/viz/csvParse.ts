@@ -679,7 +679,7 @@ function consumeRow(line: string, plan: HeaderPlan, sink: RowSinkState): void {
       if (arr.length < COUNTS_CAP_PER_ROUND) {
         arr.push(v);
       } else {
-        const j = Math.floor(Math.random() * seen);
+        const j = deterministicReservoirIndex(round, seen);
         if (j < COUNTS_CAP_PER_ROUND) arr[j] = v;
       }
       // Top-K-by-count branch (deterministic head). K is small (20) so
@@ -746,4 +746,26 @@ function consumeRow(line: string, plan: HeaderPlan, sink: RowSinkState): void {
       sortValue: Number(cell(plan.topSortColumnIdx)),
     });
   }
+}
+
+/** Versioned deterministic replacement for Math.random in visualization-only
+ * reservoir sampling. Scientific outputs are never sampled; this only makes
+ * repeated dashboard parses select the same background observations. */
+function deterministicReservoirIndex(round: string, seen: number): number {
+  let value = (0x6d2b79f5 ^ seen ^ stableStringHash(round)) >>> 0;
+  value ^= value >>> 16;
+  value = Math.imul(value, 0x7feb352d);
+  value ^= value >>> 15;
+  value = Math.imul(value, 0x846ca68b);
+  value ^= value >>> 16;
+  return value % seen;
+}
+
+function stableStringHash(value: string): number {
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index++) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return hash >>> 0;
 }

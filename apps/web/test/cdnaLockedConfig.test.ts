@@ -193,7 +193,7 @@ describe("cDNA-display locked config", () => {
     useRunStore.getState().loadLockedConfig(imported);
     let state = useRunStore.getState();
     expect(state).toMatchObject({
-      currentStep: "sources",
+      currentStep: "inputs",
       status: "idle",
       errorMessage: null,
       log: [],

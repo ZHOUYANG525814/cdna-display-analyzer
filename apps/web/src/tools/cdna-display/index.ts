@@ -8,7 +8,6 @@ import type { Tool } from "@/tools/types";
 import { useRunStore } from "@/state/useRunStore";
 import { SourcesStep } from "./steps/SourcesStep";
 import { ConfigureStep } from "./steps/ConfigureStep";
-import { PreviewStep } from "./steps/PreviewStep";
 import { RunStep } from "./steps/RunStep";
 import { ResultsStep } from "./steps/ResultsStep";
 import { initializeCdnaWorker, terminateCdnaWorker } from "@/worker/cdnaWorkerClient";
@@ -24,14 +23,15 @@ export const cdnaDisplayTool: Tool = {
     "Demultiplex + enrichment of cDNA/mRNA-display NGS selection rounds, streamed in-browser.",
   icon: Dna,
   steps: [
-    { id: "sources", label: "Sources", blurb: "Select FASTQs", Component: SourcesStep },
-    { id: "configure", label: "Configure", blurb: "Reference + primers", Component: ConfigureStep },
-    { id: "preview", label: "Preview", blurb: "Align & pick CDS", Component: PreviewStep },
-    { id: "run", label: "Run", blurb: "Demultiplex + analyze", Component: RunStep },
-    { id: "results", label: "Results", blurb: "Download", Component: ResultsStep },
+    { id: "inputs", label: "Inputs", blurb: "Rounds + FASTQs", Component: SourcesStep },
+    { id: "design", label: "Design", blurb: "Reference + primers + CDS", Component: ConfigureStep },
+    { id: "analyze", label: "Analyze", blurb: "Review + run", Component: RunStep },
+    { id: "results", label: "Results", blurb: "Enrichment + QC", Component: ResultsStep },
   ],
   useCurrentStep: () => useRunStore((s) => s.currentStep),
   useSetStep: () => useRunStore((s) => s.setStep),
+  useRunStatus: () => useRunStore((s) => s.status),
+  isRunning: () => useRunStore.getState().status === "running",
   dispose: () => {
     terminateCdnaWorker();
     if (useRunStore.getState().status === "running") {

@@ -10,11 +10,12 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { estimateReadLength, runPreview, type PreviewResult, type PreviewStatus } from "@/tools/cdna-display/preview";
 import { translateDna } from "@cdna/core";
 
-export function PreviewStep() {
+export function PreviewStep({ embedded = false }: { embedded?: boolean }) {
   const {
     referenceSeq,
     rounds,
     localFiles,
+    pipelineMode,
     estimatedReadLength,
     previewResults,
     setPreview,
@@ -33,7 +34,10 @@ export function PreviewStep() {
   const doPreview = async () => {
     setBusy(true);
     try {
-      const estLen = await estimateReadLength(localFiles);
+      const inputFiles = pipelineMode === "per-round"
+        ? rounds.flatMap((round) => round.sources.flatMap((source) => source.file ? [source.file] : []))
+        : localFiles;
+      const estLen = await estimateReadLength(inputFiles);
       const results = runPreview(referenceSeq, rounds, estLen);
       setPreview(estLen, results);
     } finally {
@@ -88,14 +92,14 @@ export function PreviewStep() {
         );
       })}
 
-      <div className="flex justify-between">
+      {!embedded && <div className="flex justify-between">
         <Button variant="ghost" onClick={goPrev}>
           <ArrowLeft className="mr-1.5 h-4 w-4" /> Back
         </Button>
         <Button size="lg" disabled={!allRoundsHaveCds || busy} onClick={goNext}>
           Continue to Run <ArrowRight className="ml-1.5 h-4 w-4" />
         </Button>
-      </div>
+      </div>}
     </div>
   );
 }

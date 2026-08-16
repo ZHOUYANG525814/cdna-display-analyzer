@@ -5,6 +5,8 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { Badge } from "@/components/ui/badge";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import {
   runInCdnaWorker,
   setCdnaWorkerErrorHandler,
@@ -17,6 +19,7 @@ import {
   zeroCoverageMessage,
 } from "@/lib/runGuards";
 import { DriveAuthProvider } from "@/adapters/DriveAuthProvider";
+import { validatePrimer, validateProjectName, validateReference, validateRoundName } from "@/lib/validation";
 
 const CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID as string | undefined;
 
@@ -37,6 +40,13 @@ export function RunStep() {
   const driveFiles = useRunStore((s) => s.driveFiles);
   const rounds = useRunStore((s) => s.rounds);
   const pipelineMode = useRunStore((s) => s.pipelineMode);
+  const projectName = useRunStore((s) => s.projectName);
+  const referenceSeq = useRunStore((s) => s.referenceSeq);
+  const expectedFileNames = useRunStore((s) => s.expectedFileNames);
+  const errorMessage = useRunStore((s) => s.errorMessage);
+  const minMeanPhred = useRunStore((s) => s.minMeanPhred);
+  const minMeanPhredCds = useRunStore((s) => s.minMeanPhredCds);
+  const pseudocount = useRunStore((s) => s.pseudocount);
   // Per-round inputs may contain multiple technical shards per round.
   const uiSources = useMemo(() => {
     if (pipelineMode === "per-round") {
@@ -54,6 +64,21 @@ export function RunStep() {
     ];
   }, [pipelineMode, rounds, localFiles, driveFiles]);
   const total = uiSources.length;
+  const analysisErrors = useMemo(() => {
+    const errors: string[] = [];
+    const projectError = validateProjectName(projectName); if (projectError) errors.push(projectError);
+    const referenceError = validateReference(referenceSeq); if (referenceError) errors.push(referenceError);
+    if (rounds.length < 2) errors.push("Round 0 and at least one selected round are required.");
+    if (rounds.some((round) => validateRoundName(round.name) || validatePrimer(round.fwPrimer, "Forward") || validatePrimer(round.rvPrimer, "Reverse"))) errors.push("Every round needs a valid name and primer pair.");
+    if (rounds.some((round) => round.cdsStart == null || round.cdsEnd == null || round.cdsEnd < round.cdsStart || (round.cdsEnd - round.cdsStart + 1) % 3 !== 0)) errors.push("Every round needs an in-frame CDS interval.");
+    if (pipelineMode === "per-round" && rounds.some((round) => round.sources.length === 0 || round.sources.some((source) => !source.file && !source.driveRef))) errors.push("Select every expected shard and bind at least one FASTQ to every round.");
+    if (pipelineMode === "multiplexed") {
+      if (total === 0) errors.push("Select at least one FASTQ file.");
+      if (total < expectedFileNames.length) errors.push("Select a FASTQ for every expected slot in the imported locked config.");
+    }
+    if (!Number.isFinite(minMeanPhred) || minMeanPhred < 0 || minMeanPhred > 40 || !Number.isFinite(minMeanPhredCds) || minMeanPhredCds < 0 || minMeanPhredCds > 40 || !Number.isFinite(pseudocount) || pseudocount <= 0 || pseudocount > 100) errors.push("One or more QC/statistical settings are outside the supported range.");
+    return errors;
+  }, [driveFiles, expectedFileNames, localFiles, minMeanPhred, minMeanPhredCds, pipelineMode, projectName, pseudocount, referenceSeq, rounds, total]);
 
   // Pipe worker bundle/import errors into the run log so they're visible.
   useEffect(() => {
@@ -64,6 +89,10 @@ export function RunStep() {
 
   const start = useCallback(async () => {
     const s = useRunStore.getState();
+    if (analysisErrors.length > 0) {
+      s.failRun(analysisErrors.join(" "));
+      return;
+    }
     const roundsCfg: RoundConfigInput[] = s.rounds.map((r) => ({
       name: r.name,
       fwPrimer: r.fwPrimer,
@@ -235,7 +264,6 @@ export function RunStep() {
       if (zeroCoverage.length > 0) {
         const msg = zeroCoverageMessage(zeroCoverage);
         useRunStore.getState().appendLog({ text: msg, tag: "error" });
-        useRunStore.setState({ outcome });
         useRunStore.getState().failRun(msg);
         return;
       }
@@ -249,7 +277,7 @@ export function RunStep() {
       useRunStore.getState().appendLog({ text: `ERROR: ${msg}`, tag: "error" });
       useRunStore.getState().failRun(msg);
     }
-  }, []);
+  }, [analysisErrors]);
 
   const cancel = useCallback(() => {
     terminateCdnaWorker();
@@ -260,7 +288,7 @@ export function RunStep() {
 
   const sources = uiSources;
 
-  const showProgress = status === "running" || status === "done" || status === "cancelled";
+  const showProgress = status !== "idle";
 
   return (
     <div className="mx-auto max-w-5xl space-y-6">
@@ -276,9 +304,9 @@ export function RunStep() {
               {status === "cancelled" && "Cancelled."}
             </CardDescription>
           </div>
-          {status !== "running" && status !== "done" && (
-            <Button size="lg" onClick={start}>
-              <Play className="mr-1.5 h-4 w-4" /> {status === "idle" ? "Start" : "Run again"}
+          {status !== "running" && (
+            <Button size="lg" onClick={start} disabled={analysisErrors.length > 0}>
+              <Play className="mr-1.5 h-4 w-4" /> {status === "idle" ? "Run analysis" : "Run again"}
             </Button>
           )}
           {status === "running" && (
@@ -288,17 +316,14 @@ export function RunStep() {
           )}
         </CardHeader>
 
-        {showProgress && (
-          <CardContent className="space-y-4">
-            <OverallProgress />
-            <div className="space-y-2">
-              {sources.map((s, i) => (
-                <PerFileProgress key={i} index={i} name={s.name} totalBytes={s.totalBytes} />
-              ))}
-            </div>
-          </CardContent>
-        )}
+        <CardContent className="space-y-3">{analysisErrors.length > 0 && <div className="rounded border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive">{analysisErrors.map((error) => <div key={error}>• {error}</div>)}</div>}{errorMessage && <div role="alert" className="rounded border border-destructive/50 bg-destructive/5 p-3 text-sm text-destructive">{errorMessage}</div>}</CardContent>
       </Card>
+
+      <Card><CardHeader><CardTitle className="text-base">Inputs and design</CardTitle><CardDescription>Confirm the round/file binding and CDS definition before the full run.</CardDescription></CardHeader><CardContent className="space-y-3 text-sm"><div className="rounded bg-muted/40 p-3 text-xs">Mode: <strong>{pipelineMode}</strong> · {rounds.length} rounds · {total} files · reference {referenceSeq.length.toLocaleString()} bp</div>{rounds.map((round) => <div key={round.id} className="rounded border p-3"><strong>{round.name}</strong><div className="mt-1 text-xs text-muted-foreground">Fw {round.fwPrimer} · Rv {round.rvPrimer} · CDS {round.cdsStart ?? "?"}–{round.cdsEnd ?? "?"}</div>{pipelineMode === "per-round" && <div className="mt-1 text-xs text-muted-foreground">{round.sources.map((source) => source.file?.name ?? source.driveRef?.name ?? source.expectedFileName ?? "missing").join(", ")}</div>}</div>)}</CardContent></Card>
+
+      <NgSettings />
+
+      {showProgress && <Card><CardHeader><CardTitle className="text-sm">Progress</CardTitle></CardHeader><CardContent className="space-y-4"><OverallProgress /><div className="space-y-2">{sources.map((source, index) => <PerFileProgress key={index} index={index} name={source.name} totalBytes={source.totalBytes} />)}</div></CardContent></Card>}
 
       <Card>
         <CardHeader>
@@ -312,6 +337,16 @@ export function RunStep() {
       <NavRow />
     </div>
   );
+}
+
+function NgSettings() {
+  const s = useRunStore();
+  return <Card><CardHeader><CardTitle className="text-base">QC and statistics</CardTitle><CardDescription>Read Q ≥ {s.minMeanPhred}; CDS Q ≥ {s.minMeanPhredCds}; pseudocount {s.pseudocount} RPM; stop filtering {s.filterStop ? "on" : "off"}; engine {s.useWasm ? "WASM" : "TypeScript"}.</CardDescription></CardHeader><CardContent><details><summary className="cursor-pointer text-sm font-medium">Advanced settings</summary><div className="mt-4 grid gap-4 sm:grid-cols-2">
+    <label className="space-y-1 text-xs"><Label>Minimum mean read Q</Label><Input disabled={s.status === "running"} type="number" min={0} max={40} value={s.minMeanPhred} onChange={(event) => s.setMinMeanPhred(Number(event.target.value))} /></label>
+    <label className="space-y-1 text-xs"><Label>Minimum mean CDS Q</Label><Input disabled={s.status === "running"} type="number" min={0} max={40} value={s.minMeanPhredCds} onChange={(event) => s.setMinMeanPhredCds(Number(event.target.value))} /></label>
+    <label className="space-y-1 text-xs"><Label>Enrichment pseudocount (RPM)</Label><Input disabled={s.status === "running"} type="number" min={Number.MIN_VALUE} max={100} step={0.5} value={s.pseudocount} onChange={(event) => s.setPseudocount(Number(event.target.value))} /></label>
+    <div className="space-y-3 text-sm"><label className="flex items-center gap-2"><input disabled={s.status === "running"} type="checkbox" checked={s.filterStop} onChange={(event) => s.setFilterStop(event.target.checked)} />Discard premature stop codons</label><label className="flex items-center gap-2"><input disabled={s.status === "running"} type="checkbox" checked={s.useWasm} onChange={(event) => s.setUseWasm(event.target.checked)} />Use WASM analysis engine</label></div>
+  </div></details></CardContent></Card>;
 }
 
 function NavRow() {

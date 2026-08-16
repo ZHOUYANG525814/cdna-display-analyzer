@@ -4,7 +4,7 @@ import type { DriveFileRef, PipelineProgressMsg } from "../worker/types";
 import { NANOPORE_INPUT_LIMITS, validateNanoporeDriveFile, validateNanoporeLocalFile } from "../tools/nanopore-targeted/inputValidation";
 import { validateProjectName } from "../lib/validation";
 
-export const TARGETED_NANOPORE_STEPS = ["inputs", "qc", "run", "results"] as const;
+export const TARGETED_NANOPORE_STEPS = ["inputs", "design", "analyze", "results"] as const;
 export type TargetedNanoporeStepId = (typeof TARGETED_NANOPORE_STEPS)[number];
 
 export interface TargetedSourceFile {
@@ -184,19 +184,20 @@ export const useTargetedNanoporeStore = create<TargetedNanoporeState>((set, get)
     if (i > 0) set({ currentStep: TARGETED_NANOPORE_STEPS[i - 1]! });
   },
   projectName: "",
-  setProjectName: (projectName) => set({ projectName, qcLocked: false }),
+  setProjectName: (projectName) => set({ projectName, qcLocked: false, runState: emptyRunState() }),
   rounds: [makeRound(0), makeRound(1)],
   addRound: () => {
     if (get().rounds.length >= NANOPORE_INPUT_LIMITS.maxRounds) return;
-    set({ rounds: [...get().rounds, makeRound(get().rounds.length)], qcLocked: false });
+    set({ rounds: [...get().rounds, makeRound(get().rounds.length)], qcLocked: false, runState: emptyRunState() });
   },
-  removeRound: (id) => set({ rounds: renumber(get().rounds.filter((r) => r.id !== id)), qcLocked: false }),
+  removeRound: (id) => set({ rounds: renumber(get().rounds.filter((r) => r.id !== id)), qcLocked: false, runState: emptyRunState() }),
   addLocalFiles: (roundId, files) => set({
     rounds: get().rounds.map((r) => r.id === roundId ? {
       ...r,
       files: attachSources(r.files, files.map((file) => ({ file, driveRef: null }))),
     } : r),
     qcLocked: false,
+    runState: emptyRunState(),
   }),
   addDriveFiles: (roundId, files) => set({
     rounds: get().rounds.map((r) => r.id === roundId ? {
@@ -204,6 +205,7 @@ export const useTargetedNanoporeStore = create<TargetedNanoporeState>((set, get)
       files: attachSources(r.files, files.map((driveRef) => ({ file: null, driveRef }))),
     } : r),
     qcLocked: false,
+    runState: emptyRunState(),
   }),
   removeSource: (roundId, sourceId) => set({
     rounds: get().rounds.map((r) => r.id === roundId ? {
@@ -216,33 +218,35 @@ export const useTargetedNanoporeStore = create<TargetedNanoporeState>((set, get)
       }),
     } : r),
     qcLocked: false,
+    runState: emptyRunState(),
   }),
   referenceSeq: "",
-  setReferenceSeq: (referenceSeq) => set({ referenceSeq, qcLocked: false }),
+  setReferenceSeq: (referenceSeq) => set({ referenceSeq, qcLocked: false, runState: emptyRunState() }),
   cdsStart: 1,
   cdsEnd: 0,
   cdsStrand: "+",
-  setCds: (patch) => set({ ...patch, qcLocked: false }),
+  setCds: (patch) => set({ ...patch, qcLocked: false, runState: emptyRunState() }),
   sites: [],
-  setSites: (sites) => set({ sites, qcLocked: false }),
+  setSites: (sites) => set({ sites, qcLocked: false, runState: emptyRunState() }),
   addSiteByNt: (ntStart) => {
     if (get().sites.length >= NANOPORE_INPUT_LIMITS.maxSites) return;
     if (get().sites.some((s) => s.ntStart === ntStart)) return;
     const sites = [...get().sites, { id: uid("site"), name: "", ntStart }]
       .sort((a, b) => a.ntStart - b.ntStart)
       .map((s, i) => ({ ...s, name: `site_${String(i + 1).padStart(2, "0")}` }));
-    set({ sites, qcLocked: false });
+    set({ sites, qcLocked: false, runState: emptyRunState() });
   },
   removeSite: (id) => set({
     sites: get().sites.filter((s) => s.id !== id).map((s, i) => ({ ...s, name: `site_${String(i + 1).padStart(2, "0")}` })),
     qcLocked: false,
+    runState: emptyRunState(),
   }),
   settings: TARGETED_USER_DEFAULTS,
-  setSettings: (patch) => set({ settings: { ...get().settings, ...patch }, qcLocked: false }),
+  setSettings: (patch) => set({ settings: { ...get().settings, ...patch }, qcLocked: false, runState: emptyRunState() }),
   qcLocked: false,
   setQcLocked: (qcLocked) => set({ qcLocked }),
   reportHaplotypes: true,
-  setReportHaplotypes: (reportHaplotypes) => set({ reportHaplotypes }),
+  setReportHaplotypes: (reportHaplotypes) => set({ reportHaplotypes, runState: emptyRunState() }),
   runState: emptyRunState(),
   setRunState: (patch) => set({ runState: { ...get().runState, ...patch } }),
   updateRunProgress: (progress) => set({
@@ -302,6 +306,13 @@ export const useTargetedNanoporeStore = create<TargetedNanoporeState>((set, get)
 export function targetedInputErrors(state: Pick<TargetedNanoporeState,
   "projectName" | "rounds" | "referenceSeq" | "cdsStart" | "cdsEnd" | "sites"
 >): string[] {
+  return [...new Set([
+    ...targetedSourceErrors(state),
+    ...targetedDesignErrors(state),
+  ])];
+}
+
+export function targetedSourceErrors(state: Pick<TargetedNanoporeState, "projectName" | "rounds">): string[] {
   const errors: string[] = [];
   const projectError = validateProjectName(state.projectName);
   if (projectError) errors.push(projectError);
@@ -317,6 +328,13 @@ export function targetedInputErrors(state: Pick<TargetedNanoporeState,
   const driveIds = state.rounds.flatMap((r) => r.files.flatMap((f) => f.driveRef ? [f.driveRef.id] : []));
   const localObjects = state.rounds.flatMap((r) => r.files.flatMap((f) => f.file ? [f.file] : []));
   if (new Set(driveIds).size !== driveIds.length || new Set(localObjects).size !== localObjects.length) errors.push("The same FASTQ source cannot be assigned twice.");
+  return [...new Set(errors)];
+}
+
+export function targetedDesignErrors(state: Pick<TargetedNanoporeState,
+  "referenceSeq" | "cdsStart" | "cdsEnd" | "sites"
+>): string[] {
+  const errors: string[] = [];
   const reference = normalizeReference(state.referenceSeq);
   if (!reference) errors.push("Amplicon reference is required.");
   if (reference.length > NANOPORE_INPUT_LIMITS.maxReferenceBases) errors.push(`Reference exceeds ${NANOPORE_INPUT_LIMITS.maxReferenceBases.toLocaleString()} bases.`);
@@ -330,7 +348,7 @@ export function targetedInputErrors(state: Pick<TargetedNanoporeState,
   try {
     resolveTargetSites(reference, state.sites.map((s) => ({ name: s.name, ntStart: s.ntStart, length: 3 })));
   } catch (error) {
-    errors.push(error instanceof Error ? error.message : String(error));
+    errors.unshift(error instanceof Error ? error.message : String(error));
   }
   for (const site of state.sites) {
     if (site.ntStart < state.cdsStart || site.ntStart + 2 > state.cdsEnd || (site.ntStart - state.cdsStart) % 3 !== 0) {
@@ -338,22 +356,4 @@ export function targetedInputErrors(state: Pick<TargetedNanoporeState,
     }
   }
   return [...new Set(errors)];
-}
-
-// Compatibility aliases for pre-registration tests/imports.
-export const targetedSourceErrors = (state: Pick<TargetedNanoporeState, "projectName" | "rounds">): string[] => {
-  const errors: string[] = [];
-  if (!state.projectName.trim()) errors.push("Project name is required.");
-  if (state.rounds.length < 2) errors.push("Round 0 and at least one selected round are required.");
-  if (state.rounds.some((r) => r.files.length === 0)) errors.push("Every round needs at least one FASTQ file.");
-  return errors;
-};
-
-export function targetedDesignErrors(state: Pick<TargetedNanoporeState, "referenceSeq" | "sites">): string[] {
-  try {
-    resolveTargetSites(state.referenceSeq, state.sites.map((s) => ({ name: s.name, ntStart: s.ntStart, length: 3 })));
-    return [];
-  } catch (error) {
-    return [error instanceof Error ? error.message : String(error)];
-  }
 }
