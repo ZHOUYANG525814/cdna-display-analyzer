@@ -31,6 +31,9 @@ export interface AnalyzerInput {
   /** Explicit analysis pseudocount. Product default is 0.5; 1.0 remains
    *  available for sensitivity and historical comparison. */
   pseudocount: number;
+  /** Optional production serialization chunk size. Omit to retain the public
+   * one-line-per-part contract used by small callers and parity tests. */
+  csvChunkChars?: number;
 }
 
 export type RowValue = string | number | boolean;
@@ -50,6 +53,9 @@ export interface AnalyzerRow {
 
 export interface AnalyzerOutput {
   rows: AnalyzerRow[];
+  /** Number of scientific rows. Production compact mode deliberately leaves
+   * `rows` empty and exposes only this bounded scalar plus CSV chunks. */
+  rowCount: number;
   columns: ReadonlyArray<ColumnSpec>;
   /** Library-wide median of the raw log₂((RPM+p)/(RPM₀+p)) ratio for
    *  each non-first round — the centering offset that produces Centered_Enrich.
@@ -60,14 +66,16 @@ export interface AnalyzerOutput {
    *  fold-change quantity even though the column itself is no longer emitted
    *  (Phase 6.16). */
   libraryMedianEnrich: Record<string, number>;
-  /** CSV emitted as one string per line, each entry already terminated with
-   *  "\n". Splitting the output avoids materializing the entire CSV as one
+  /** CSV emitted as bounded chunks, each terminated with "\n". Splitting
+   *  the output avoids materializing the entire CSV as one
    *  JS String, which would otherwise hit V8's ~537 MB string-length ceiling
    *  on multi-GB FASTQ inputs. Callers wanting the joined string can do
    *  `csvParts.join("")`; callers wanting a downloadable artifact can pass
    *  the array straight to `new Blob(csvParts, …)` — Blob accepts a list of
    *  strings and never concatenates them into one JS String. */
   csvParts: string[];
+  /** Per-comparison FDR counts computed before compact columns are released. */
+  fdrHitCounts: Record<string, { q05: number; q01: number }>;
 }
 
 type ColType = "string" | "int" | "float" | "bool";
@@ -171,9 +179,9 @@ export function runAnalyzer(input: AnalyzerInput): AnalyzerOutput | null {
     let domDna = "";
     let domCount = -1;
     for (const [dna, c] of rec.dnaFreq) {
-      // Strictly greater so the first-seen DNA wins on ties — matches Python's
-      // max(...) which returns the first item with the maximum key.
-      if (c > domCount) {
+      // A lexical tie-break makes the scientific output independent of FASTQ
+      // shard order while preserving the highest-total-count definition.
+      if (c > domCount || (c === domCount && (domDna === "" || dna < domDna))) {
         domCount = c;
         domDna = dna;
       }
@@ -187,6 +195,15 @@ export function runAnalyzer(input: AnalyzerInput): AnalyzerOutput | null {
     }
     rows.push(row);
   }
+
+  // The DNA→AA aggregation maps can be very large. Rows now own every value
+  // needed by the statistical passes, so release nested map storage before
+  // allocating enrichment/FDR scratch arrays and CSV chunks.
+  for (const record of aaRecords.values()) {
+    record.counts.clear();
+    record.dnaFreq.clear();
+  }
+  aaRecords.clear();
 
   // 3. RPM (per million of passed_qc).
   for (const rnd of roundNames) {
@@ -289,8 +306,238 @@ export function runAnalyzer(input: AnalyzerInput): AnalyzerOutput | null {
   });
 
   const columns = buildColumnSpecs(roundNames);
-  const csvParts = serializeCsv(rows, columns);
-  return { rows, columns, csvParts, libraryMedianEnrich };
+  const csvParts = input.csvChunkChars
+    ? serializeCsvChunked(rows, columns, input.csvChunkChars)
+    : serializeCsv(rows, columns);
+  return {
+    rows,
+    rowCount: rows.length,
+    columns,
+    csvParts,
+    libraryMedianEnrich,
+    fdrHitCounts: summarizeFdrHits(rows, roundNames),
+  };
+}
+
+/** Production analyzer that never materializes one dynamic object per
+ * peptide. Scientific values live in dense parallel arrays and are emitted
+ * through a stable sort index directly into bounded CSV chunks. */
+export function runAnalyzerCompact(input: AnalyzerInput): AnalyzerOutput | null {
+  const { roundNames, dnaCounters, stats, pseudocount } = input;
+  assertValidPseudocount(pseudocount);
+
+  interface CompactAaRecord {
+    counts: Float64Array;
+    dnaFreq: Map<string, number>;
+  }
+  const roundIndex = new Map(roundNames.map((name, index) => [name, index]));
+  const records = new Map<string, CompactAaRecord>();
+  for (const round of roundNames) {
+    const index = roundIndex.get(round)!;
+    const counter = dnaCounters.get(round);
+    if (!counter) continue;
+    for (const [dna, count] of counter) {
+      const peptide = translateDna(dna);
+      let record = records.get(peptide);
+      if (!record) {
+        record = { counts: new Float64Array(roundNames.length), dnaFreq: new Map() };
+        records.set(peptide, record);
+      }
+      record.counts[index]! += count;
+      record.dnaFreq.set(dna, (record.dnaFreq.get(dna) ?? 0) + count);
+    }
+  }
+  if (records.size === 0) return null;
+
+  const rowCount = records.size;
+  const peptides = new Array<string>(rowCount);
+  const dominantDna = new Array<string>(rowCount);
+  const counts = roundNames.map(() => new Float64Array(rowCount));
+  let rowIndex = 0;
+  for (const [peptide, record] of records) {
+    peptides[rowIndex] = peptide;
+    let dominant = "";
+    let dominantCount = -1;
+    for (const [dna, count] of record.dnaFreq) {
+      if (count > dominantCount || (count === dominantCount && (dominant === "" || dna < dominant))) {
+        dominant = dna;
+        dominantCount = count;
+      }
+    }
+    dominantDna[rowIndex] = dominant;
+    for (let round = 0; round < roundNames.length; round++) {
+      counts[round]![rowIndex] = record.counts[round]!;
+    }
+    record.dnaFreq.clear();
+    rowIndex++;
+  }
+  records.clear();
+
+  type DenseValues = string[] | Float64Array | number[];
+  const values = new Map<string, DenseValues>();
+  values.set("Peptide_Seq", peptides);
+  values.set("Dominant_DNA_Seq", dominantDna);
+  for (let round = 0; round < roundNames.length; round++) {
+    values.set(`Count_${roundNames[round]}`, counts[round]!);
+  }
+
+  const rpms = roundNames.map(() => new Float64Array(rowCount));
+  for (let round = 0; round < roundNames.length; round++) {
+    const total = stats.get(roundNames[round]!)?.passed_qc ?? 0;
+    const rpm = rpms[round]!;
+    const count = counts[round]!;
+    if (total > 0) {
+      for (let row = 0; row < rowCount; row++) rpm[row] = count[row]! / total * 1e6;
+    }
+    values.set(`RPM_${roundNames[round]}`, rpm);
+  }
+
+  for (let round = 1; round < roundNames.length; round++) {
+    const previousName = roundNames[round - 1]!;
+    const currentName = roundNames[round]!;
+    const previousTotal = stats.get(previousName)?.passed_qc ?? 0;
+    const currentTotal = stats.get(currentName)?.passed_qc ?? 0;
+    const output = new Float64Array(rowCount);
+    for (let row = 0; row < rowCount; row++) {
+      output[row] = log2RpmRatio(
+        counts[round]![row]!, currentTotal,
+        counts[round - 1]![row]!, previousTotal,
+        pseudocount,
+      );
+    }
+    values.set(`Enrich_Step_${currentName}_vs_${previousName}`, output);
+  }
+
+  const libraryMedianEnrich: Record<string, number> = {};
+  const fdrHitCounts: Record<string, { q05: number; q01: number }> = {};
+  const firstName = roundNames[0];
+  if (firstName !== undefined) {
+    const firstTotal = stats.get(firstName)?.passed_qc ?? 0;
+    for (let round = 1; round < roundNames.length; round++) {
+      const currentName = roundNames[round]!;
+      const currentTotal = stats.get(currentName)?.passed_qc ?? 0;
+      const raw = new Array<number>(rowCount);
+      const centered = new Float64Array(rowCount);
+      const zValues = new Float64Array(rowCount);
+      const pValues = new Array<number>(rowCount);
+      const variances = new Float64Array(rowCount);
+      for (let row = 0; row < rowCount; row++) {
+        const currentCount = counts[round]![row]!;
+        const firstCount = counts[0]![row]!;
+        const enrich = log2RpmRatio(currentCount, currentTotal, firstCount, firstTotal, pseudocount);
+        const variance = varLog2RpmRatio(currentCount, currentTotal, firstCount, firstTotal, pseudocount);
+        const standardError = seLog2RpmRatio(currentCount, currentTotal, firstCount, firstTotal, pseudocount);
+        const z = enrich / (standardError > 1e-12 ? standardError : 1e-12);
+        const p = twoSidedPvalue(z);
+        raw[row] = enrich;
+        zValues[row] = z;
+        pValues[row] = p;
+        variances[row] = variance;
+      }
+      const medianKey = `Enrich_Global_${currentName}_vs_${firstName}`;
+      const medianEnrich = median(raw);
+      libraryMedianEnrich[medianKey] = medianEnrich;
+      for (let row = 0; row < rowCount; row++) centered[row] = raw[row]! - medianEnrich;
+      const qValues = benjaminiHochberg(pValues);
+      const qColumn = `FDR_q_${currentName}_vs_${firstName}`;
+      let q05 = 0;
+      let q01 = 0;
+      for (const q of qValues) {
+        if (!Number.isFinite(q)) continue;
+        if (q < 0.05) q05++;
+        if (q < 0.01) q01++;
+      }
+      fdrHitCounts[qColumn] = { q05, q01 };
+      values.set(`Centered_Enrich_${currentName}_vs_${firstName}`, centered);
+      values.set(`Z_Enrich_${currentName}_vs_${firstName}`, zValues);
+      values.set(`Pval_Enrich_${currentName}_vs_${firstName}`, pValues);
+      values.set(qColumn, qValues);
+      values.set(`Var_Enrich_${currentName}_vs_${firstName}`, variances);
+    }
+  }
+
+  const sortColumn = roundNames.length > 1
+    ? `Centered_Enrich_${roundNames[roundNames.length - 1]}_vs_${roundNames[0]}`
+    : `RPM_${roundNames[0]}`;
+  const sortValues = values.get(sortColumn)!;
+  const order = Array.from({ length: rowCount }, (_, index) => index);
+  order.sort((left, right) => {
+    const a = sortValues[left] as number;
+    const b = sortValues[right] as number;
+    if (a > b) return -1;
+    if (a < b) return 1;
+    return peptides[left]! < peptides[right]! ? -1 : peptides[left]! > peptides[right]! ? 1 : 0;
+  });
+
+  const columns = buildColumnSpecs(roundNames);
+  const csvParts = serializeCompactCsvChunked(
+    order,
+    columns,
+    values,
+    input.csvChunkChars ?? 4 * 1024 * 1024,
+  );
+  values.clear();
+  return {
+    rows: [],
+    rowCount,
+    columns,
+    csvParts,
+    libraryMedianEnrich,
+    fdrHitCounts,
+  };
+}
+
+function summarizeFdrHits(
+  rows: ReadonlyArray<AnalyzerRow>,
+  roundNames: ReadonlyArray<string>,
+): Record<string, { q05: number; q01: number }> {
+  const output: Record<string, { q05: number; q01: number }> = {};
+  const first = roundNames[0];
+  if (!first) return output;
+  for (const current of roundNames.slice(1)) {
+    const column = `FDR_q_${current}_vs_${first}`;
+    let q05 = 0;
+    let q01 = 0;
+    for (const row of rows) {
+      const q = row[column] as number;
+      if (!Number.isFinite(q)) continue;
+      if (q < 0.05) q05++;
+      if (q < 0.01) q01++;
+    }
+    output[column] = { q05, q01 };
+  }
+  return output;
+}
+
+function serializeCompactCsvChunked(
+  order: ReadonlyArray<number>,
+  columns: ReadonlyArray<ColumnSpec>,
+  values: ReadonlyMap<string, string[] | Float64Array | number[]>,
+  targetChars: number,
+): string[] {
+  const output: string[] = [];
+  const pending: string[] = [];
+  let pendingChars = 0;
+  const append = (line: string): void => {
+    pending.push(line);
+    pendingChars += line.length;
+    if (pendingChars >= targetChars) {
+      output.push(pending.join(""));
+      pending.length = 0;
+      pendingChars = 0;
+    }
+  };
+  append(columns.map((column) => csvCell(column.name)).join(",") + "\n");
+  for (const row of order) {
+    const cells = new Array<string>(columns.length);
+    for (let columnIndex = 0; columnIndex < columns.length; columnIndex++) {
+      const column = columns[columnIndex]!;
+      cells[columnIndex] = formatCell(values.get(column.name)?.[row], column.type);
+    }
+    append(cells.join(",") + "\n");
+  }
+  if (pending.length > 0) output.push(pending.join(""));
+  return output;
 }
 
 // CSV cell formatting per pandas.to_csv defaults (na_rep='', quoting=QUOTE_MINIMAL).
@@ -333,29 +580,53 @@ function formatCell(value: RowValue | undefined, type: ColType): string {
   }
 }
 
-/** Serialize rows to CSV as a list of newline-terminated parts.
- *
- *  Each entry is one CSV line including its trailing "\n", so
- *  `parts.join("")` reproduces the historical single-string output exactly.
- *  Returning an array (instead of joining here) lets callers stream the
- *  output into a Blob without ever building a multi-GB JS String, which
- *  otherwise throws `RangeError: Invalid string length` past V8's
- *  ~537 MB string-length ceiling.
- *
- *  pandas to_csv defaults to "\n" line terminator (lineterminator='\n').
- */
+/** Serialize rows to CSV as a list of newline-terminated rows. */
 export function serializeCsv(
   rows: ReadonlyArray<AnalyzerRow>,
   columns: ReadonlyArray<ColumnSpec>,
 ): string[] {
+  const out = [columns.map((column) => csvCell(column.name)).join(",") + "\n"];
+  for (const row of rows) {
+    const cells: string[] = [];
+    for (const column of columns) cells.push(formatCell(row[column.name], column.type));
+    out.push(cells.join(",") + "\n");
+  }
+  return out;
+}
+
+/** Serialize rows to bounded newline-aligned chunks.
+ *
+ *  `parts.join("")` reproduces the historical output exactly. Bounded chunks
+ *  avoid both V8's single-string ceiling and millions of one-line string
+ *  objects on highly diverse libraries.
+ *
+ *  pandas to_csv defaults to "\n" line terminator (lineterminator='\n').
+ */
+export function serializeCsvChunked(
+  rows: ReadonlyArray<AnalyzerRow>,
+  columns: ReadonlyArray<ColumnSpec>,
+  targetChars = 4 * 1024 * 1024,
+): string[] {
   const out: string[] = [];
-  out.push(columns.map((c) => csvCell(c.name)).join(",") + "\n");
+  const pending: string[] = [];
+  let pendingChars = 0;
+  const append = (line: string): void => {
+    pending.push(line);
+    pendingChars += line.length;
+    if (pendingChars >= targetChars) {
+      out.push(pending.join(""));
+      pending.length = 0;
+      pendingChars = 0;
+    }
+  };
+  append(columns.map((c) => csvCell(c.name)).join(",") + "\n");
   for (const row of rows) {
     const cells: string[] = [];
     for (const col of columns) {
       cells.push(formatCell(row[col.name], col.type));
     }
-    out.push(cells.join(",") + "\n");
+    append(cells.join(",") + "\n");
   }
+  if (pending.length > 0) out.push(pending.join(""));
   return out;
 }

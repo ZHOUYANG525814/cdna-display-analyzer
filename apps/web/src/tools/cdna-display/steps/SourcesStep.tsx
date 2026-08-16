@@ -251,8 +251,8 @@ export function SourcesStep() {
             <ModeOption
               active={pipelineMode === "per-round"}
               icon={Files}
-              title="One FASTQ per round"
-              description="Each FASTQ is bound to one round; no barcode demultiplex. Same primer across rounds is safe. You'll bind files to rounds below."
+              title="One or more shards per round"
+              description="Each technical FASTQ shard is bound to one round; no barcode demultiplex. Same primer across rounds is safe. You'll bind files to rounds below."
               onClick={() => setPipelineMode("per-round")}
             />
           </div>
@@ -265,7 +265,7 @@ export function SourcesStep() {
             <CardHeader>
               <CardTitle className="text-base">FASTQ sources — configured per round</CardTitle>
               <CardDescription>
-                In per-round mode, each round picks its own FASTQ in the
+                In per-round mode, each round picks one or more technical FASTQ shards in the
                 <span className="font-medium"> Configure</span> step. If any
                 of those files live in Google Drive, sign in here first so
                 the next step's picker works without a redirect (otherwise
@@ -291,7 +291,7 @@ export function SourcesStep() {
         <CardHeader>
           <CardTitle>FASTQ sources</CardTitle>
           <CardDescription>
-            Single-end FASTQ files only. `.fastq.gz` is not yet supported.
+            Single-end FASTQ files. `.fastq.gz` and `.fq.gz` are decompressed as streams.
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -340,7 +340,7 @@ export function SourcesStep() {
                   ref={inputRef}
                   type="file"
                   multiple
-                  accept=".fastq,.fq"
+                  accept=".fastq,.fq,.fastq.gz,.fq.gz"
                   className="hidden"
                   onChange={(e) => {
                     void onFiles(e.target.files);

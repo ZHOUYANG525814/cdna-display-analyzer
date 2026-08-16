@@ -23,9 +23,12 @@ function snapshot(mode: "multiplexed" | "per-round"): CdnaExportSnapshot {
         rvPrimer: "TGCATGCATG",
         cdsStart: 1,
         cdsEnd: 30,
-        file: mode === "per-round" ? new File(["reads"], "round0.fastq") : null,
-        driveRef: null,
-        expectedFileName: null,
+        sources: mode === "per-round" ? [{
+          id: "s0",
+          file: new File(["reads"], "round0.fastq"),
+          driveRef: null,
+          expectedFileName: null,
+        }] : [],
       },
       {
         id: "r1",
@@ -34,12 +37,12 @@ function snapshot(mode: "multiplexed" | "per-round"): CdnaExportSnapshot {
         rvPrimer: "TGCATGCATA",
         cdsStart: 1,
         cdsEnd: 30,
-        file: null,
-        driveRef:
-          mode === "per-round"
-            ? { id: "secret-drive-id", name: "round1.fq", sizeBytes: 123 }
-            : null,
-        expectedFileName: null,
+        sources: mode === "per-round" ? [{
+          id: "s1",
+          file: null,
+          driveRef: { id: "secret-drive-id", name: "round1.fq", sizeBytes: 123 },
+          expectedFileName: null,
+        }] : [],
       },
     ],
     filterStop: true,
@@ -67,7 +70,9 @@ describe("cDNA-display locked config", () => {
       const state = useRunStore.getState();
       expect(state.localFiles).toEqual([]);
       expect(state.driveFiles).toEqual([]);
-      expect(state.rounds.every((round) => !round.file && !round.driveRef)).toBe(true);
+      expect(state.rounds.every((round) =>
+        round.sources.every((source) => !source.file && !source.driveRef),
+      )).toBe(true);
       expect(state.pseudocount).toBe(0.5);
       expect(buildCdnaLockedConfig(state)).toEqual(locked);
     },
@@ -113,11 +118,11 @@ describe("cDNA-display locked config", () => {
       ["per-round global source", { ...perRound, sources: { expectedFileNames: ["pooled.fastq"] } }],
       ["multiplexed round source", {
         ...multiplexed,
-        rounds: [{ ...multiplexed.rounds[0], expectedFileName: "round.fastq" }, multiplexed.rounds[1]],
+        rounds: [{ ...multiplexed.rounds[0], expectedFileNames: ["round.fastq"] }, multiplexed.rounds[1]],
       }],
       ["missing per-round source", {
         ...perRound,
-        rounds: [{ ...perRound.rounds[0], expectedFileName: null }, perRound.rounds[1]],
+        rounds: [{ ...perRound.rounds[0], expectedFileNames: [] }, perRound.rounds[1]],
       }],
       ["duplicate round", {
         ...multiplexed,
@@ -196,13 +201,31 @@ describe("cDNA-display locked config", () => {
       finishedAt: null,
     });
     const first = state.rounds[0]!;
-    expect(first.expectedFileName).toBe("round0.fastq");
-    state.updateRound(first.id, {
+    expect(first.sources[0]?.expectedFileName).toBe("round0.fastq");
+    state.updateRound(first.id, { sources: [{
+      ...first.sources[0]!,
       file: new File(["replacement"], "renamed.fastq"),
       driveRef: null,
-    });
+    }] });
     state = useRunStore.getState();
-    expect(state.rounds[0]!.file?.name).toBe("renamed.fastq");
-    expect(state.rounds[0]!.expectedFileName).toBe("round0.fastq");
+    expect(state.rounds[0]!.sources[0]?.file?.name).toBe("renamed.fastq");
+    expect(state.rounds[0]!.sources[0]?.expectedFileName).toBe("round0.fastq");
+  });
+
+  it("migrates a legacy v1 single-file round into a one-element source list", () => {
+    const v2 = buildCdnaLockedConfig(snapshot("per-round"));
+    const legacy = {
+      ...v2,
+      schemaVersion: "cdna-display-config/v1",
+      rounds: v2.rounds.map(({ expectedFileNames, ...round }) => ({
+        ...round,
+        expectedFileName: expectedFileNames[0] ?? null,
+      })),
+    };
+    const imported = parseCdnaLockedConfig(JSON.stringify(legacy));
+    useRunStore.getState().loadLockedConfig(imported);
+    expect(useRunStore.getState().rounds.map((round) =>
+      round.sources.map((source) => source.expectedFileName),
+    )).toEqual([["round0.fastq"], ["round1.fq"]]);
   });
 });

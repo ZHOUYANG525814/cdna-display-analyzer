@@ -46,15 +46,15 @@ export interface RoundForm {
   rvPrimer: string;
   cdsStart: number | null;
   cdsEnd: number | null;
-  /** Per-round FASTQ from the local filesystem. Only used when
-   *  pipelineMode === "per-round". Mutually exclusive with `driveRef`:
-   *  setting one clears the other. */
+  /** Technical shards belonging to this biological round. */
+  sources: CdnaRoundSource[];
+}
+
+export interface CdnaRoundSource {
+  id: string;
   file: File | null;
-  /** Per-round FASTQ from Google Drive. Only used when
-   *  pipelineMode === "per-round". Mutually exclusive with `file`. */
   driveRef: DriveFileRef | null;
-  /** Filename retained by an imported locked config. This is a prompt only:
-   *  the user must reselect the actual FASTQ before running. */
+  /** Filename retained by an imported locked config. This is a prompt only. */
   expectedFileName: string | null;
 }
 
@@ -69,7 +69,7 @@ export interface CdnaLockedConfigImport {
     rvPrimer: string;
     cdsStart: number;
     cdsEnd: number;
-    expectedFileName: string | null;
+    expectedFileNames: string[];
   }>;
   settings: {
     filterStop: boolean;
@@ -176,9 +176,7 @@ function defaultRound(idx: number): RoundForm {
     rvPrimer: "",
     cdsStart: null,
     cdsEnd: null,
-    file: null,
-    driveRef: null,
-    expectedFileName: null,
+    sources: [],
   };
 }
 
@@ -295,9 +293,17 @@ export const useRunStore = create<RunState>((set, get) => ({
       referenceSeq: config.referenceSeq,
       rounds: config.rounds.map((round) => ({
         id: mkRoundId(),
-        ...round,
-        file: null,
-        driveRef: null,
+        name: round.name,
+        fwPrimer: round.fwPrimer,
+        rvPrimer: round.rvPrimer,
+        cdsStart: round.cdsStart,
+        cdsEnd: round.cdsEnd,
+        sources: round.expectedFileNames.map((expectedFileName, index) => ({
+          id: `expected_${index}_${mkRoundId()}`,
+          file: null,
+          driveRef: null,
+          expectedFileName,
+        })),
       })),
       adaptive: true,
       filterStop: config.settings.filterStop,

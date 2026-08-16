@@ -1,16 +1,22 @@
 #!/usr/bin/env node
 import {
   alignTargetedReference,
+  alignTargetedReferenceWithEstimate,
   buildProtectedMask,
   doradoMeanQ,
+  createTargetedReferenceSeedIndex,
+  createWasmTargetedAligner,
+  estimateReferenceOffsetIndexed,
   evaluateTargetedQc,
   parseDoradoHeaderQ,
   readFastqRecords,
   resolveDoradoReadQ,
   reverseComplementBytes,
+  reverseComplementBytesToBytes,
   runTargetedNanoporePipeline,
 } from "@cdna/core";
 import { stat } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { loadTargetedConfig } from "./config.js";
 import { fileChunks, quantile } from "./io.js";
 
@@ -33,6 +39,7 @@ const args = process.argv.slice(2);
 const command = args[0];
 const configArg = option("--config");
 const limit = Number(option("--limit") ?? "500");
+const useWasmAlignment = args.includes("--wasm-alignment");
 
 if (!command || !configArg || !Number.isInteger(limit) || limit < 1) usage();
 
@@ -53,6 +60,8 @@ try {
     await benchmark(config, limit);
   } else if (command === "analyze") {
     await analyze(config, limit);
+  } else if (command === "parity") {
+    await parity(config, limit);
   } else {
     usage();
   }
@@ -67,8 +76,66 @@ function option(name: string): string | undefined {
 }
 
 function usage(): never {
-  console.error("Usage: targeted-nanopore <validate|q-audit|benchmark|analyze> --config config.yaml [--limit 500]");
+  console.error("Usage: targeted-nanopore <validate|q-audit|benchmark|analyze|parity> --config config.yaml [--limit 500] [--wasm-alignment]");
   process.exit(2);
+}
+
+async function parity(config: Awaited<ReturnType<typeof loadTargetedConfig>>, maxReads: number): Promise<void> {
+  const reference = new TextEncoder().encode(config.reference);
+  const seedIndex = createTargetedReferenceSeedIndex(reference);
+  const candidate = createWasmTargetedAligner(reference);
+  let checked = 0;
+  try {
+    for (const round of config.rounds) {
+      for await (const record of readFastqRecords(fileChunks(round.fastq))) {
+        if (checked >= maxReads) break;
+        const strands = [record.seq, reverseComplementBytesToBytes(record.seq)];
+        for (const [strandIndex, read] of strands.entries()) {
+          const tsEstimate = estimateReferenceOffsetIndexed(seedIndex, read);
+          const wasmEstimate = candidate.estimate(read);
+          if (stableJson(tsEstimate) !== stableJson(wasmEstimate)) {
+            throw new Error(`Estimate mismatch at read ${checked}, strand ${strandIndex}: TS=${JSON.stringify(tsEstimate)} WASM=${JSON.stringify(wasmEstimate)}`);
+          }
+          let ts;
+          let wasm;
+          try { ts = alignTargetedReferenceWithEstimate(reference, read, tsEstimate); }
+          catch (error) { ts = { error: error instanceof Error ? error.message : String(error) }; }
+          try { wasm = candidate.alignWithEstimate(read, wasmEstimate); }
+          catch (error) { wasm = { error: error instanceof Error ? error.message : String(error) }; }
+          if (stableJson(ts) !== stableJson(wasm)) {
+            throw new Error(`Alignment mismatch at read ${checked}, strand ${strandIndex}:\nTS=${JSON.stringify(ts)}\nWASM=${JSON.stringify(wasm)}`);
+          }
+        }
+        checked++;
+      }
+      if (checked >= maxReads) break;
+    }
+  } finally {
+    candidate.free();
+  }
+  console.log(JSON.stringify({ status: "identical", reads: checked, strandAlignments: checked * 2 }));
+}
+
+function stableJson(value: unknown): string {
+  return JSON.stringify(value, (_key, current: unknown) => {
+    if (current instanceof Map) {
+      return Object.fromEntries(
+        [...current.entries()].sort(([left], [right]) =>
+          String(left).localeCompare(String(right))
+        ),
+      );
+    }
+    if (current && typeof current === "object" && !Array.isArray(current)) {
+      return Object.fromEntries(
+        Object.entries(current as Record<string, unknown>).sort(([left], [right]) => left.localeCompare(right)),
+      );
+    }
+    return current;
+  });
+}
+
+function sha256(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
 }
 
 async function analyze(config: Awaited<ReturnType<typeof loadTargetedConfig>>, maxReads: number): Promise<void> {
@@ -81,6 +148,7 @@ async function analyze(config: Awaited<ReturnType<typeof loadTargetedConfig>>, m
     sites: config.sites.map((s) => ({ name: s.name, ntStart: s.ntStart, length: s.length })),
     settings: { ...config.qc, minTargetBaseQ: 15, minInputCountToScore: 10, pseudocount: 0.5, reportHaplotypes: true },
     maxReadsPerSource: maxReads,
+    useWasmAlignment,
   });
   console.log(JSON.stringify({
     readsPerSourceLimit: maxReads,
@@ -88,6 +156,13 @@ async function analyze(config: Awaited<ReturnType<typeof loadTargetedConfig>>, m
     files: result.fileStats,
     topRows: result.analyzer.perSiteRows.slice(0, 30),
     libraryMedianFitness: result.analyzer.libraryMedianFitness,
+    outputHashes: {
+      completePipeline: sha256(stableJson(result)),
+      perSiteCsv: sha256(result.analyzer.perSiteCsvParts.join("")),
+      haplotypeCsv: sha256(result.analyzer.haplotypeCsvParts.join("")),
+      exactCodonCsv: sha256(result.exactCodonCsvParts.join("")),
+      exactHaplotypeCsv: sha256(result.exactHaplotypeCsvParts.join("")),
+    },
   }, null, 2));
 }
 

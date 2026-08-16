@@ -12,6 +12,8 @@ import { parse as parseYaml } from "yaml";
 
 import { runPipeline, type DemultiplexSettings, type RoundConfigInput } from "@cdna/core";
 import { LocalFastqSource } from "../src/adapters/LocalFastqSource";
+import { AutoDecompressFastqSource } from "../src/adapters/AutoDecompressFastqSource";
+import { gzipSync } from "fflate";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 // Reuse the fixture from packages/core — same sample FASTQ + same golden CSV.
@@ -99,5 +101,41 @@ describe("LocalFastqSource via runPipeline → golden CSV (shared columns)", () 
     const d = source.describe();
     expect(d.name).toBe("x.fastq");
     expect(d.sizeBytes).toBe(3);
+  });
+
+  it("produces identical output for gzip and uncompressed FASTQ", async () => {
+    const fastqBytes = new Uint8Array(await readFile(path.join(CORE_FIX, "sample_1k.fastq")));
+    const primersText = await readFile(path.join(CORE_FIX, "primers.yaml"), "utf8");
+    const { rounds, settings } = loadConfig(primersText);
+    const plain = new AutoDecompressFastqSource(new LocalFastqSource(
+      new File([fastqBytes], "sample.fastq"),
+    ));
+    const compressed = new AutoDecompressFastqSource(new LocalFastqSource(
+      new File([gzipSync(fastqBytes)], "sample.fastq.gz"),
+    ));
+    const [plainResult, gzipResult] = await Promise.all([
+      runPipeline({ sources: [plain], rounds, settings, pseudocount: 0.5, useWasm: true }),
+      runPipeline({ sources: [compressed], rounds, settings, pseudocount: 0.5, useWasm: true }),
+    ]);
+    expect(gzipResult.runStatsJson).toBe(plainResult.runStatsJson);
+    expect(gzipResult.analyzer?.csvParts.join("")).toBe(plainResult.analyzer?.csvParts.join(""));
+  });
+
+  it("is invariant to technical-shard splitting and shard order", async () => {
+    const fastq = await readFile(path.join(CORE_FIX, "sample_1k.fastq"), "utf8");
+    const primersText = await readFile(path.join(CORE_FIX, "primers.yaml"), "utf8");
+    const { rounds, settings } = loadConfig(primersText);
+    const lines = fastq.split("\n");
+    const splitLine = Math.floor((lines.length - 1) / 8) * 4;
+    const shardA = lines.slice(0, splitLine).join("\n") + "\n";
+    const shardB = lines.slice(splitLine).join("\n");
+    const source = (text: string, name: string) => new LocalFastqSource(new File([text], name));
+    const whole = await runPipeline({ sources: [source(fastq, "whole.fastq")], rounds, settings, pseudocount: 0.5, useWasm: true });
+    const split = await runPipeline({ sources: [source(shardA, "a.fastq"), source(shardB, "b.fastq")], rounds, settings, pseudocount: 0.5, useWasm: true });
+    const reversed = await runPipeline({ sources: [source(shardB, "b.fastq"), source(shardA, "a.fastq")], rounds, settings, pseudocount: 0.5, useWasm: true });
+    expect(split.analyzer?.csvParts.join("")).toBe(whole.analyzer?.csvParts.join(""));
+    expect(reversed.analyzer?.csvParts.join("")).toBe(whole.analyzer?.csvParts.join(""));
+    expect(split.runStatsJson).toBe(whole.runStatsJson);
+    expect(reversed.runStatsJson).toBe(whole.runStatsJson);
   });
 });

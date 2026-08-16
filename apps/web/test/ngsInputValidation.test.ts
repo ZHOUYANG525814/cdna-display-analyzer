@@ -8,14 +8,13 @@ import {
 import { useRunStore } from "../src/state/useRunStore";
 
 describe("NGS FASTQ input validation", () => {
-  it.each(["reads.fastq", "reads.FASTQ", "reads.fq"])(
+  it.each(["reads.fastq", "reads.FASTQ", "reads.fq", "reads.fastq.gz", "reads.fq.gz"])(
     "accepts %s",
     (name) => expect(validateFastqFileName(name, 100).ok).toBe(true),
   );
 
   it.each([
     "reads.txt",
-    "reads.fastq.gz",
     "../reads.fastq",
     "bad\u0000.fastq",
     `${"a".repeat(256)}.fastq`,

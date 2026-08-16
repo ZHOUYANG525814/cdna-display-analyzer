@@ -2,15 +2,20 @@
 // top-of-page tool switcher that routes between cDNA-DISPLAY and Nanopore
 // (and any future sibling tools listed in tools/registry.ts).
 
-import { useEffect } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Stepper } from "@/components/Stepper";
 import { useAppStore } from "@/state/useAppStore";
 import { tools, toolById } from "@/tools/registry";
+import type { Tool } from "@/tools/types";
+import { recordTelemetry } from "@/lib/telemetry";
 
 export function App() {
   const activeToolId = useAppStore((s) => s.activeToolId);
   const setActiveTool = useAppStore((s) => s.setActiveTool);
-  const tool = toolById(activeToolId);
+  const registration = toolById(activeToolId);
+  const [tool, setTool] = useState<Tool | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [homeRequest, setHomeRequest] = useState(0);
   // Mirror the active tool id onto <html data-tool="..."> so the per-tool CSS
   // variable overrides in index.css take effect. Any element under <html>
   // automatically picks up the swap — no per-component theming code needed.
@@ -18,20 +23,54 @@ export function App() {
     document.documentElement.dataset.tool = activeToolId;
   }, [activeToolId]);
 
+  useEffect(() => {
+    let cancelled = false;
+    setTool(null);
+    setLoadError(null);
+    const startedAt = performance.now();
+    performance.mark(`tool:${registration.id}:import:start`);
+    void registration.load().then(
+      (loaded) => {
+        if (cancelled) return;
+        performance.mark(`tool:${registration.id}:import:end`);
+        performance.measure(
+          `tool:${registration.id}:import`,
+          `tool:${registration.id}:import:start`,
+          `tool:${registration.id}:import:end`,
+        );
+        window.dispatchEvent(new CustomEvent("cdna:tool-loaded", {
+          detail: { toolId: registration.id, durationMs: performance.now() - startedAt },
+        }));
+        recordTelemetry({
+          toolId: registration.id,
+          phase: "tool-import",
+          status: "ok",
+          startedAt,
+          durationMs: performance.now() - startedAt,
+        });
+        setTool(loaded);
+      },
+      (error: unknown) => {
+        if (!cancelled) {
+          recordTelemetry({
+            toolId: registration.id,
+            phase: "tool-import",
+            status: "error",
+            startedAt,
+            durationMs: performance.now() - startedAt,
+          });
+          setLoadError(error instanceof Error ? error.message : String(error));
+        }
+      },
+    );
+    return () => { cancelled = true; };
+  }, [registration]);
+
   // Logo click → jump back to the active tool's first step (Sources). Keeps
   // the user's data intact — this is navigation, not a reset. Lets a user
   // who clicked too far quickly get back without hunting through the stepper.
-  const setStep = tool.useSetStep?.();
-  const goHome = () => {
-    if (setStep && tool.steps.length > 0) setStep(tool.steps[0]!.id);
-  };
-  // Each tool owns its own currentStep field (cdna-display uses useRunStore,
-  // nanopore-ssm uses useNanoporeStore). The Tool definition optionally
-  // provides a hook to read the active step; if absent we use the first step.
-  const ActiveStepFromHook = tool.useCurrentStep?.();
-  const ActiveStep =
-    tool.steps.find((s) => s.id === ActiveStepFromHook)?.Component ?? tool.steps[0]!.Component;
-  const Icon = tool.icon;
+  const goHome = () => setHomeRequest((request) => request + 1);
+  const Icon = registration.icon;
 
   return (
     <div className="min-h-screen bg-background">
@@ -44,7 +83,7 @@ export function App() {
             title="Back to first step"
           >
             {Icon ? <Icon className="h-5 w-5 text-primary transition group-hover:scale-110" /> : null}
-            <h1 className="text-base font-semibold tracking-tight">{tool.name}</h1>
+            <h1 className="text-base font-semibold tracking-tight">{registration.name}</h1>
           </button>
           <div className="flex items-center gap-3">
             <ToolSwitcher activeId={activeToolId} onChange={setActiveTool} />
@@ -55,18 +94,47 @@ export function App() {
         </div>
       </header>
 
+      {loadError ? (
+        <main className="mx-auto max-w-7xl px-4 py-8 text-sm text-destructive">
+          Could not load {registration.name}: {loadError}
+        </main>
+      ) : tool ? (
+        <ToolRuntime key={tool.id} tool={tool} homeRequest={homeRequest} />
+      ) : (
+        <main className="mx-auto max-w-7xl px-4 py-8 text-sm text-muted-foreground">
+          Loading {registration.name}…
+        </main>
+      )}
+
+      <SiteFooter />
+    </div>
+  );
+}
+
+function ToolRuntime({ tool, homeRequest }: { tool: Tool; homeRequest: number }) {
+  const currentStep = tool.useCurrentStep?.();
+  const setStep = tool.useSetStep?.();
+  const previousHomeRequest = useRef(homeRequest);
+  useEffect(() => () => tool.dispose?.(), [tool]);
+  useEffect(() => {
+    if (previousHomeRequest.current !== homeRequest) {
+      previousHomeRequest.current = homeRequest;
+      if (setStep && tool.steps.length > 0) setStep(tool.steps[0]!.id);
+    }
+  }, [homeRequest, setStep, tool.steps]);
+  const ActiveStep =
+    tool.steps.find((step) => step.id === currentStep)?.Component ?? tool.steps[0]!.Component;
+  return (
+    <>
       <Stepper
         steps={tool.steps}
         {...(tool.useCurrentStep ? { useCurrentStep: tool.useCurrentStep } : {})}
         {...(tool.useSetStep ? { useSetStep: tool.useSetStep } : {})}
       />
-
       <main className="mx-auto max-w-7xl px-4 py-8">
         <ActiveStep />
       </main>
-
-      <SiteFooter />
-    </div>
+    </>
   );
 }
 

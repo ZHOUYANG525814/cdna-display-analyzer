@@ -1,0 +1,17 @@
+{
+  "name": "cdna-core-wasm",
+  "type": "module",
+  "version": "0.0.0",
+  "files": [
+    "cdna_core_wasm_bg.wasm",
+    "cdna_core_wasm.js",
+    "cdna_core_wasm_bg.js",
+    "cdna_core_wasm.d.ts"
+  ],
+  "main": "cdna_core_wasm.js",
+  "types": "cdna_core_wasm.d.ts",
+  "sideEffects": [
+    "./cdna_core_wasm.js",
+    "./snippets/*"
+  ]
+}

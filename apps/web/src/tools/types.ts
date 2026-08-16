@@ -40,4 +40,18 @@ export interface Tool {
   useCurrentStep?: () => string;
   /** Hook returning a setter for the active step id. Drives stepper click-back. */
   useSetStep?: () => (stepId: string) => void;
+  /** Release lazy Worker/runtime resources when switching away from a tool. */
+  dispose?: () => void;
+}
+
+/** Lightweight metadata kept in the application shell. The implementation
+ * loader is deliberately dynamic so selecting one tool does not fetch the
+ * other tool's UI, store, core entrypoint, or worker bundle. */
+export interface ToolRegistration {
+  id: string;
+  name: string;
+  shortName?: string;
+  description: string;
+  icon?: LucideIcon;
+  load: () => Promise<Tool>;
 }

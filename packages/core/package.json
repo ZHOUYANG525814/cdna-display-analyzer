@@ -18,6 +18,7 @@
   },
   "dependencies": {
     "@cdna/core-wasm": "workspace:*",
+    "@cdna/targeted-wasm": "workspace:*",
     "@cdna/types": "workspace:*"
   },
   "devDependencies": {

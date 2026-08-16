@@ -14,8 +14,12 @@
 // All semantics mirror the TS reference (packages/core/src/) so parity tests
 // stay byte-identical regardless of which path runs.
 
-use wasm_bindgen::prelude::*;
 use js_sys::Float64Array;
+#[cfg(feature = "targeted")]
+use js_sys::Uint32Array;
+#[cfg(feature = "targeted")]
+use std::collections::HashMap;
+use wasm_bindgen::prelude::*;
 
 // Layout of the result buffer:
 //   [0] best_score          (f64; +Inf when no anchor matched any round)
@@ -28,29 +32,38 @@ use js_sys::Float64Array;
 // way out. JS reads the four values directly after each `score()` call.
 pub const RESULT_LEN: usize = 4;
 
+#[cfg(feature = "cdna")]
 struct RoundData {
     fw_anchor: Vec<u8>,
     fw_barcode: Vec<u8>,
 }
 
+#[cfg(feature = "cdna")]
 #[wasm_bindgen]
 pub struct Scorer {
     rounds: Vec<RoundData>,
     result: [f64; RESULT_LEN],
 }
 
+#[cfg(feature = "cdna")]
 #[wasm_bindgen]
 impl Scorer {
     #[wasm_bindgen(constructor)]
     pub fn new() -> Self {
-        Self { rounds: Vec::new(), result: [0.0; RESULT_LEN] }
+        Self {
+            rounds: Vec::new(),
+            result: [0.0; RESULT_LEN],
+        }
     }
 
     /// Register one round. Call in the same order the TS side iterates rounds;
     /// that order is the stable-sort tiebreaker on equal scores.
     #[wasm_bindgen(js_name = addRound)]
     pub fn add_round(&mut self, fw_anchor: Vec<u8>, fw_barcode: Vec<u8>) {
-        self.rounds.push(RoundData { fw_anchor, fw_barcode });
+        self.rounds.push(RoundData {
+            fw_anchor,
+            fw_barcode,
+        });
     }
 
     /// Returns a length-4 Float64Array view aliasing the Scorer's internal
@@ -129,6 +142,7 @@ impl Scorer {
     }
 }
 
+#[cfg(feature = "cdna")]
 #[wasm_bindgen(js_name = reverseComplement)]
 pub fn reverse_complement(input: &[u8]) -> Vec<u8> {
     let n = input.len();
@@ -146,6 +160,7 @@ pub fn reverse_complement(input: &[u8]) -> Vec<u8> {
     out
 }
 
+#[cfg(feature = "cdna")]
 #[wasm_bindgen(js_name = meanPhred)]
 pub fn mean_phred(qual: &[u8]) -> f64 {
     if qual.is_empty() {
@@ -158,12 +173,415 @@ pub fn mean_phred(qual: &[u8]) -> f64 {
     (sum as f64) / (qual.len() as f64)
 }
 
+// --- Targeted Nanopore: run-scoped full-reference aligner ----------------
+
+#[cfg(feature = "targeted")]
+const TARGET_RESULT_LEN: usize = 13;
+#[cfg(feature = "targeted")]
+const TARGET_NEG: i32 = -0x3fff_ffff;
+#[cfg(feature = "targeted")]
+const TARGET_TRACE_NONE: u8 = 255;
+#[cfg(feature = "targeted")]
+const TARGET_M: usize = 0;
+#[cfg(feature = "targeted")]
+const TARGET_I: usize = 1;
+#[cfg(feature = "targeted")]
+const TARGET_D: usize = 2;
+
+/// Candidate full-amplicon aligner. The reference, unique-kmer index, DP rows,
+/// packed traceback and CIGAR buffers all live for the complete run. JS reads
+/// a fixed metadata view and packed CIGAR view after each call.
+#[cfg(feature = "targeted")]
+#[wasm_bindgen]
+pub struct TargetedAligner {
+    reference: Vec<u8>,
+    seed_k: usize,
+    unique_kmers: HashMap<u32, i32>,
+    offsets: Vec<i32>,
+    prev_m: Vec<i32>,
+    prev_i: Vec<i32>,
+    prev_d: Vec<i32>,
+    curr_m: Vec<i32>,
+    curr_i: Vec<i32>,
+    curr_d: Vec<i32>,
+    trace: Vec<u8>,
+    reversed: Vec<u8>,
+    cigar: Vec<u32>,
+    result: [f64; TARGET_RESULT_LEN],
+}
+
+#[cfg(feature = "targeted")]
+#[wasm_bindgen]
+impl TargetedAligner {
+    #[wasm_bindgen(constructor)]
+    pub fn new(reference: Vec<u8>) -> Self {
+        let seed_k = 11usize;
+        let mut counts: HashMap<u32, i32> = HashMap::new();
+        if reference.len() >= seed_k {
+            for pos in 0..=(reference.len() - seed_k) {
+                if let Some(key) = encode_target_kmer(&reference, pos, seed_k) {
+                    counts
+                        .entry(key)
+                        .and_modify(|value| *value = -1)
+                        .or_insert(pos as i32);
+                }
+            }
+        }
+        Self {
+            reference,
+            seed_k,
+            unique_kmers: counts,
+            offsets: Vec::new(),
+            prev_m: Vec::new(),
+            prev_i: Vec::new(),
+            prev_d: Vec::new(),
+            curr_m: Vec::new(),
+            curr_i: Vec::new(),
+            curr_d: Vec::new(),
+            trace: Vec::new(),
+            reversed: Vec::new(),
+            cigar: Vec::new(),
+            result: [0.0; TARGET_RESULT_LEN],
+        }
+    }
+
+    #[wasm_bindgen(js_name = resultView)]
+    pub fn result_view(&self) -> Float64Array {
+        unsafe { Float64Array::view(&self.result) }
+    }
+
+    #[wasm_bindgen(js_name = cigarView)]
+    pub fn cigar_view(&self) -> Uint32Array {
+        unsafe { Uint32Array::view(&self.cigar) }
+    }
+
+    /// Writes offset and hit count into result[9:11].
+    pub fn estimate(&mut self, read: &[u8]) {
+        let (offset, hits) = self.estimate_inner(read);
+        self.result[9] = offset as f64;
+        self.result[10] = hits as f64;
+    }
+
+    #[wasm_bindgen(js_name = alignWithEstimate)]
+    pub fn align_with_estimate(&mut self, read: &[u8], offset: i32, hits: u32) -> bool {
+        let mut band = 24usize;
+        loop {
+            if self.align_at_band(read, offset, hits, band) {
+                let touched = self.result[12] == 1.0;
+                let coverage = self.result[8];
+                if (!touched && coverage >= 0.98) || band >= 192 {
+                    return true;
+                }
+            } else if band >= 192 {
+                return false;
+            }
+            if band >= 192 {
+                return true;
+            }
+            band = (band * 2).min(192);
+        }
+    }
+
+    pub fn align(&mut self, read: &[u8]) -> bool {
+        let (offset, hits) = self.estimate_inner(read);
+        self.align_with_estimate(read, offset, hits)
+    }
+}
+
+#[cfg(feature = "targeted")]
+impl TargetedAligner {
+    fn estimate_inner(&mut self, read: &[u8]) -> (i32, u32) {
+        self.offsets.clear();
+        if read.len() >= self.seed_k && self.reference.len() >= self.seed_k {
+            for pos in 0..=(read.len() - self.seed_k) {
+                if let Some(key) = encode_target_kmer(read, pos, self.seed_k) {
+                    if let Some(&ref_pos) = self.unique_kmers.get(&key) {
+                        if ref_pos >= 0 {
+                            self.offsets.push(pos as i32 - ref_pos);
+                        }
+                    }
+                }
+            }
+        }
+        if self.offsets.is_empty() {
+            return (
+                ((read.len() as i32 - self.reference.len() as i32) / 2).max(0),
+                0,
+            );
+        }
+        self.offsets.sort_unstable();
+        (
+            self.offsets[self.offsets.len() / 2],
+            self.offsets.len() as u32,
+        )
+    }
+
+    fn ensure_rows(&mut self, width: usize) {
+        self.prev_m.resize(width, TARGET_NEG);
+        self.prev_i.resize(width, TARGET_NEG);
+        self.prev_d.resize(width, TARGET_NEG);
+        self.curr_m.resize(width, TARGET_NEG);
+        self.curr_i.resize(width, TARGET_NEG);
+        self.curr_d.resize(width, TARGET_NEG);
+    }
+
+    fn align_at_band(&mut self, read: &[u8], offset: i32, hits: u32, band: usize) -> bool {
+        let m = self.reference.len();
+        if m == 0 || read.is_empty() {
+            return false;
+        }
+        let window_start = (offset - band as i32).max(0) as usize;
+        let window_end = read
+            .len()
+            .min((offset + m as i32 + band as i32).max(0) as usize);
+        if window_end <= window_start {
+            return false;
+        }
+        let window = &read[window_start..window_end];
+        let n = window.len();
+        let local_offset = offset - window_start as i32;
+        let width = n + 1;
+        self.ensure_rows(width);
+        self.prev_m.fill(TARGET_NEG);
+        self.prev_i.fill(TARGET_NEG);
+        self.prev_d.fill(TARGET_NEG);
+        let row0_bound = local_offset + band as i32;
+        if row0_bound >= 0 {
+            let row0_max = n.min(row0_bound as usize);
+            for j in 0..=row0_max {
+                self.prev_m[j] = 0;
+            }
+        }
+
+        let trace_width = 2 * band + 1;
+        self.trace
+            .resize((m + 1) * trace_width * 3, TARGET_TRACE_NONE);
+        self.trace.fill(TARGET_TRACE_NONE);
+        for i in 1..=m {
+            self.curr_m.fill(TARGET_NEG);
+            self.curr_i.fill(TARGET_NEG);
+            self.curr_d.fill(TARGET_NEG);
+            let center = i as i32 + local_offset;
+            let j_min_i32 = (center - band as i32).max(0);
+            let j_max_i32 = (n as i32).min(center + band as i32);
+            if j_max_i32 < j_min_i32 {
+                std::mem::swap(&mut self.prev_m, &mut self.curr_m);
+                std::mem::swap(&mut self.prev_i, &mut self.curr_i);
+                std::mem::swap(&mut self.prev_d, &mut self.curr_d);
+                continue;
+            }
+            let j_min = j_min_i32 as usize;
+            let j_max = j_max_i32 as usize;
+            let trace_row = i * trace_width * 3;
+            for j in j_min..=j_max {
+                if j > 0 {
+                    let mut diag = self.prev_m[j - 1];
+                    let mut diag_state = TARGET_M;
+                    if self.prev_i[j - 1] > diag {
+                        diag = self.prev_i[j - 1];
+                        diag_state = TARGET_I;
+                    }
+                    if self.prev_d[j - 1] > diag {
+                        diag = self.prev_d[j - 1];
+                        diag_state = TARGET_D;
+                    }
+                    if diag > TARGET_NEG / 2 {
+                        self.curr_m[j] = diag
+                            + if self.reference[i - 1] == window[j - 1] {
+                                2
+                            } else {
+                                -3
+                            };
+                        self.trace[trace_row + (j - j_min) * 3 + TARGET_M] = diag_state as u8;
+                    }
+                    let mut ins = self.curr_m[j - 1] - 5;
+                    let mut ins_state = TARGET_M;
+                    let extend = self.curr_i[j - 1] - 1;
+                    if extend > ins {
+                        ins = extend;
+                        ins_state = TARGET_I;
+                    }
+                    let switch = self.curr_d[j - 1] - 5;
+                    if switch > ins {
+                        ins = switch;
+                        ins_state = TARGET_D;
+                    }
+                    if ins > TARGET_NEG / 2 {
+                        self.curr_i[j] = ins;
+                        self.trace[trace_row + (j - j_min) * 3 + TARGET_I] = ins_state as u8;
+                    }
+                }
+                let mut del = self.prev_m[j] - 5;
+                let mut del_state = TARGET_M;
+                let switch = self.prev_i[j] - 5;
+                if switch > del {
+                    del = switch;
+                    del_state = TARGET_I;
+                }
+                let extend = self.prev_d[j] - 1;
+                if extend > del {
+                    del = extend;
+                    del_state = TARGET_D;
+                }
+                if del > TARGET_NEG / 2 {
+                    self.curr_d[j] = del;
+                    self.trace[trace_row + (j - j_min) * 3 + TARGET_D] = del_state as u8;
+                }
+            }
+            std::mem::swap(&mut self.prev_m, &mut self.curr_m);
+            std::mem::swap(&mut self.prev_i, &mut self.curr_i);
+            std::mem::swap(&mut self.prev_d, &mut self.curr_d);
+        }
+
+        let end_center = m as i32 + local_offset;
+        let end_min_i32 = (end_center - band as i32).max(0);
+        let end_max_i32 = (n as i32).min(end_center + band as i32);
+        if end_max_i32 < end_min_i32 {
+            return false;
+        }
+        let end_min = end_min_i32 as usize;
+        let end_max = end_max_i32 as usize;
+        let mut end_j: i32 = -1;
+        let mut end_state = TARGET_M;
+        let mut best = TARGET_NEG;
+        for j in end_min..=end_max {
+            let mut score = self.prev_m[j];
+            let mut state = TARGET_M;
+            if self.prev_i[j] > score {
+                score = self.prev_i[j];
+                state = TARGET_I;
+            }
+            if self.prev_d[j] > score {
+                score = self.prev_d[j];
+                state = TARGET_D;
+            }
+            if score > best {
+                best = score;
+                end_j = j as i32;
+                end_state = state;
+            }
+        }
+        if end_j < 0 || best <= TARGET_NEG / 2 {
+            return false;
+        }
+
+        self.reversed.clear();
+        let mut i = m;
+        let mut j = end_j as usize;
+        let mut state = end_state;
+        let mut touched = false;
+        while i > 0 {
+            if (((j as i32 - i as i32) - local_offset).abs() as usize) >= band.saturating_sub(1) {
+                touched = true;
+            }
+            let row_min = ((i as i32 + local_offset) - band as i32).max(0) as usize;
+            if j < row_min || j - row_min >= trace_width {
+                return false;
+            }
+            let previous = self.trace[(i * trace_width + (j - row_min)) * 3 + state];
+            if previous == TARGET_TRACE_NONE {
+                return false;
+            }
+            if state == TARGET_M {
+                if j == 0 {
+                    return false;
+                }
+                self.reversed
+                    .push(if self.reference[i - 1] == window[j - 1] {
+                        0
+                    } else {
+                        1
+                    });
+                i -= 1;
+                j -= 1;
+            } else if state == TARGET_I {
+                if j == 0 {
+                    return false;
+                }
+                self.reversed.push(2);
+                j -= 1;
+            } else {
+                self.reversed.push(3);
+                i -= 1;
+            }
+            state = previous as usize;
+        }
+        let read_start = window_start + j;
+        let read_end = window_start + end_j as usize;
+        self.cigar.clear();
+        let mut matches = 0usize;
+        let mut mismatches = 0usize;
+        let mut inserted = 0usize;
+        let mut deleted = 0usize;
+        let mut last_code = 255u8;
+        let mut length = 0u32;
+        for &code in self.reversed.iter().rev() {
+            if code == last_code {
+                length += 1;
+            } else {
+                if length > 0 {
+                    self.cigar.push((length << 2) | last_code as u32);
+                }
+                last_code = code;
+                length = 1;
+            }
+            match code {
+                0 => matches += 1,
+                1 => mismatches += 1,
+                2 => inserted += 1,
+                _ => deleted += 1,
+            }
+        }
+        if length > 0 {
+            self.cigar.push((length << 2) | last_code as u32);
+        }
+        let compared = matches + mismatches + inserted + deleted;
+        self.result = [
+            best as f64,
+            read_start as f64,
+            read_end as f64,
+            matches as f64,
+            mismatches as f64,
+            inserted as f64,
+            deleted as f64,
+            if compared > 0 {
+                matches as f64 / compared as f64
+            } else {
+                0.0
+            },
+            (matches + mismatches) as f64 / m as f64,
+            offset as f64,
+            hits as f64,
+            band as f64,
+            if touched { 1.0 } else { 0.0 },
+        ];
+        true
+    }
+}
+
+#[cfg(feature = "targeted")]
+fn encode_target_kmer(seq: &[u8], start: usize, k: usize) -> Option<u32> {
+    let mut value = 0u32;
+    for i in 0..k {
+        let code = match seq[start + i] {
+            b'A' | b'a' => 0,
+            b'C' | b'c' => 1,
+            b'G' | b'g' => 2,
+            b'T' | b't' => 3,
+            _ => return None,
+        };
+        value = (value << 2) | code;
+    }
+    Some(value)
+}
+
 // --- Nanopore SSM: banded approximate matcher + DualAnchorScorer ---------
 //
 // `banded_align` mirrors banded-align.ts. Used twice per site per read to
 // locate the upstream + downstream anchors with Nanopore-class error tolerance.
 
 /// One hit result. None when no alignment within tolerance was found.
+#[cfg(feature = "cdna")]
 #[derive(Clone, Copy)]
 struct MatchResult {
     start: usize,
@@ -175,6 +593,7 @@ struct MatchResult {
 ///   - tolerance = max_subs + max_indels (combined edit budget)
 ///   - alignment-length band: window in [m - max_indels, m + max_indels]
 ///   - returns lowest-score hit; tie-break: earlier start wins, then shorter length
+#[cfg(feature = "cdna")]
 fn banded_align(
     haystack: &[u8],
     needle: &[u8],
@@ -209,11 +628,16 @@ fn banded_align(
                     Some(b) => {
                         dist < b.score
                             || (dist == b.score
-                                && (start < b.start || (start == b.start && len < (b.end - b.start))))
+                                && (start < b.start
+                                    || (start == b.start && len < (b.end - b.start))))
                     }
                 };
                 if is_better {
-                    best = Some(MatchResult { start, end, score: dist });
+                    best = Some(MatchResult {
+                        start,
+                        end,
+                        score: dist,
+                    });
                     if dist == 0 {
                         return best;
                     }
@@ -227,6 +651,7 @@ fn banded_align(
 
 /// Wagner-Fischer edit distance with row rolling + early termination when the
 /// row minimum exceeds `limit`. Returns None if exceeded.
+#[cfg(feature = "cdna")]
 fn limited_edit_distance(needle: &[u8], hay: &[u8], limit: usize) -> Option<u32> {
     let n = needle.len();
     let m = hay.len();
@@ -270,14 +695,21 @@ fn limited_edit_distance(needle: &[u8], hay: &[u8], limit: usize) -> Option<u32>
 /// Exported flat-API wrapper for the TS test suite to verify Rust↔TS parity.
 /// Returns a 4-element Float64Array: [found ? 1 : 0, start, end, score].
 /// found==0 sets start/end/score to -1.
+#[cfg(feature = "cdna")]
 #[wasm_bindgen(js_name = bandedAlign)]
-pub fn banded_align_wasm(haystack: &[u8], needle: &[u8], max_subs: usize, max_indels: usize) -> Vec<f64> {
+pub fn banded_align_wasm(
+    haystack: &[u8],
+    needle: &[u8],
+    max_subs: usize,
+    max_indels: usize,
+) -> Vec<f64> {
     match banded_align(haystack, needle, max_subs, max_indels) {
         Some(m) => vec![1.0, m.start as f64, m.end as f64, m.score as f64],
         None => vec![0.0, -1.0, -1.0, -1.0],
     }
 }
 
+#[cfg(feature = "cdna")]
 struct SiteData {
     fw_anchor: Vec<u8>,
     rv_anchor: Vec<u8>,
@@ -294,6 +726,7 @@ struct SiteData {
 ///
 /// where `base = 5 * site_index`. The downstream anchor is searched only
 /// from `fw_end` onward, so it is guaranteed to sit after the upstream anchor.
+#[cfg(feature = "cdna")]
 #[wasm_bindgen]
 pub struct DualAnchorScorer {
     sites: Vec<SiteData>,
@@ -302,6 +735,7 @@ pub struct DualAnchorScorer {
     result: Vec<f64>,
 }
 
+#[cfg(feature = "cdna")]
 #[wasm_bindgen]
 impl DualAnchorScorer {
     #[wasm_bindgen(constructor)]
@@ -319,7 +753,10 @@ impl DualAnchorScorer {
     #[wasm_bindgen(js_name = addSite)]
     pub fn add_site(&mut self, fw_anchor: Vec<u8>, rv_anchor: Vec<u8>) -> usize {
         let idx = self.sites.len();
-        self.sites.push(SiteData { fw_anchor, rv_anchor });
+        self.sites.push(SiteData {
+            fw_anchor,
+            rv_anchor,
+        });
         for _ in 0..5 {
             self.result.push(0.0);
         }
@@ -344,12 +781,16 @@ impl DualAnchorScorer {
                     None
                 } else {
                     let tail = &seq[fwm.end..];
-                    banded_align(tail, &site.rv_anchor, self.max_subs, self.max_indels)
-                        .map(|rvm| (fwm, MatchResult {
-                            start: rvm.start + fwm.end,
-                            end: rvm.end + fwm.end,
-                            score: rvm.score,
-                        }))
+                    banded_align(tail, &site.rv_anchor, self.max_subs, self.max_indels).map(|rvm| {
+                        (
+                            fwm,
+                            MatchResult {
+                                start: rvm.start + fwm.end,
+                                end: rvm.end + fwm.end,
+                                score: rvm.score,
+                            },
+                        )
+                    })
                 }
             } else {
                 None
@@ -380,6 +821,7 @@ impl DualAnchorScorer {
 // Naive multi-byte substring search. Anchors are ~10 bp, reads ~150 bp, so
 // the naive O(n*m) cost is ~1500 byte ops per call — well under what a
 // fancier algorithm (Boyer-Moore / two-way) would add in setup overhead.
+#[cfg(feature = "cdna")]
 fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     let n_len = needle.len();
     let h_len = haystack.len();

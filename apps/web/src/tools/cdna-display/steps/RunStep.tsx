@@ -5,13 +5,20 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { Badge } from "@/components/ui/badge";
-import { runInWorker, setWorkerErrorHandler, terminateWorker } from "@/worker/workerClient";
+import {
+  runInCdnaWorker,
+  setCdnaWorkerErrorHandler,
+  terminateCdnaWorker,
+} from "@/worker/cdnaWorkerClient";
 import type { RoundConfigInput } from "@cdna/core";
 import {
   cdnaZeroCoverage,
   findDuplicateFastqGroups,
   zeroCoverageMessage,
 } from "@/lib/runGuards";
+import { DriveAuthProvider } from "@/adapters/DriveAuthProvider";
+
+const CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID as string | undefined;
 
 const TAG_COLORS: Record<string, string> = {
   info: "text-muted-foreground",
@@ -21,7 +28,7 @@ const TAG_COLORS: Record<string, string> = {
 };
 
 // Every component in this file uses single-field Zustand selectors so progress
-// ticks (~60–120/sec at the new threshold) only re-render the pieces that
+// ticks (time-throttled to at most one every 200 ms) only re-render the pieces that
 // actually depend on the changed slice. RunStep itself only reads structural
 // state — status + counts — so it doesn't re-render on every byte/progress msg.
 export function RunStep() {
@@ -30,28 +37,27 @@ export function RunStep() {
   const driveFiles = useRunStore((s) => s.driveFiles);
   const rounds = useRunStore((s) => s.rounds);
   const pipelineMode = useRunStore((s) => s.pipelineMode);
-  // In per-round mode the user-facing source list comes from rounds[i].file,
-  // not the (unused) localFiles array. Compute a unified view for the UI.
+  // Per-round inputs may contain multiple technical shards per round.
   const uiSources = useMemo(() => {
     if (pipelineMode === "per-round") {
-      const local = rounds
-        .filter((r) => r.file != null)
-        .map((r) => ({ name: r.file!.name, totalBytes: r.file!.size as number | null }));
-      const drive = rounds
-        .filter((r) => r.driveRef != null)
-        .map((r) => ({ name: r.driveRef!.name, totalBytes: r.driveRef!.sizeBytes }));
+      const local = rounds.flatMap((round) => round.sources.flatMap((source) => source.file
+        ? [{ name: source.file.name, totalBytes: isGzipFastq(source.file.name) ? null : source.file.size as number | null }]
+        : []));
+      const drive = rounds.flatMap((round) => round.sources.flatMap((source) => source.driveRef
+        ? [{ name: source.driveRef.name, totalBytes: isGzipFastq(source.driveRef.name) ? null : source.driveRef.sizeBytes }]
+        : []));
       return [...local, ...drive];
     }
     return [
-      ...localFiles.map((f) => ({ name: f.name, totalBytes: f.size as number | null })),
-      ...driveFiles.map((d) => ({ name: d.name, totalBytes: d.sizeBytes })),
+      ...localFiles.map((f) => ({ name: f.name, totalBytes: isGzipFastq(f.name) ? null : f.size as number | null })),
+      ...driveFiles.map((d) => ({ name: d.name, totalBytes: isGzipFastq(d.name) ? null : d.sizeBytes })),
     ];
   }, [pipelineMode, rounds, localFiles, driveFiles]);
   const total = uiSources.length;
 
   // Pipe worker bundle/import errors into the run log so they're visible.
   useEffect(() => {
-    setWorkerErrorHandler((msg) =>
+    setCdnaWorkerErrorHandler((msg) =>
       useRunStore.getState().appendLog({ text: msg, tag: "error" }),
     );
   }, []);
@@ -71,7 +77,7 @@ export function RunStep() {
     //  - multiplexed: read directly from the store's localFiles + driveFiles.
     //    sourceRoundIndices is omitted; pipeline.ts demultiplexes by barcode.
     //
-    //  - per-round: each round has either a local File or a Drive ref. We
+    //  - per-round: each round has one or more local/Drive shards. We
     //    split into the worker's [localFiles, driveFiles] flat arrays and
     //    record which round each entry belongs to in sourceRoundIndices.
     //    Layout: all local sources first (in round order), then all drive
@@ -82,7 +88,7 @@ export function RunStep() {
     let sourceRoundIndices: number[] | undefined;
     if (s.pipelineMode === "per-round") {
       const missing = s.rounds
-        .filter((r) => r.file == null && r.driveRef == null)
+        .filter((r) => !r.sources.some((source) => source.file || source.driveRef))
         .map((r) => r.name);
       if (missing.length > 0) {
         const msg = `Per-round mode: these rounds have no FASTQ bound: ${missing.join(", ")}`;
@@ -96,12 +102,14 @@ export function RunStep() {
       const driveIndicesRound: number[] = [];
       for (let i = 0; i < s.rounds.length; i++) {
         const r = s.rounds[i]!;
-        if (r.file) {
-          localFilesArr.push(r.file);
-          localIndicesRound.push(i);
-        } else if (r.driveRef) {
-          driveFilesArr.push(r.driveRef);
-          driveIndicesRound.push(i);
+        for (const source of r.sources) {
+          if (source.file) {
+            localFilesArr.push(source.file);
+            localIndicesRound.push(i);
+          } else if (source.driveRef) {
+            driveFilesArr.push(source.driveRef);
+            driveIndicesRound.push(i);
+          }
         }
       }
       jobLocalFiles = localFilesArr;
@@ -113,17 +121,21 @@ export function RunStep() {
 
     s.startRun();
     s.appendLog({ text: "Verifying FASTQ source uniqueness…", tag: "info" });
-    let duplicateGroups: string[][];
+    let duplicateCheck;
     try {
-      duplicateGroups = await findDuplicateFastqGroups(
+      duplicateCheck = await findDuplicateFastqGroups(
         s.pipelineMode === "per-round"
           ? s.rounds.flatMap((round) =>
-              round.file ? [{ file: round.file, label: `${round.name} ← ${round.file.name}` }] : [],
+              round.sources.flatMap((source) => source.file
+                ? [{ file: source.file, label: `${round.name} ← ${source.file.name}` }]
+                : []),
             )
           : s.localFiles.map((file) => ({ file, label: file.name })),
         s.pipelineMode === "per-round"
           ? s.rounds.flatMap((round) =>
-              round.driveRef ? [{ file: round.driveRef, label: `${round.name} ← ${round.driveRef.name}` }] : [],
+              round.sources.flatMap((source) => source.driveRef
+                ? [{ file: source.driveRef, label: `${round.name} ← ${source.driveRef.name}` }]
+                : []),
             )
           : s.driveFiles.map((file) => ({ file, label: file.name })),
       );
@@ -135,14 +147,30 @@ export function RunStep() {
       s.failRun(msg);
       return;
     }
-    if (duplicateGroups.length > 0) {
+    if (duplicateCheck.exactGroups.length > 0) {
       const msg =
-        "Duplicate FASTQ content detected: " +
-        duplicateGroups.map((labels) => labels.join(" ↔ ")).join("; ") +
+        "The same FASTQ source was bound more than once: " +
+        duplicateCheck.exactGroups.map((labels) => labels.join(" ↔ ")).join("; ") +
         ". Remove duplicate inputs before running.";
       s.appendLog({ text: msg, tag: "error" });
       s.failRun(msg);
       return;
+    }
+    if (duplicateCheck.probableGroups.length > 0) {
+      const details = duplicateCheck.probableGroups
+        .map((labels) => labels.join(" ↔ "))
+        .join("; ");
+      const confirmed = window.confirm(
+        "Possible duplicate FASTQ inputs were found using file size plus sampled head/tail SHA-256 " +
+          `(not a complete content hash): ${details}. Continue anyway?`,
+      );
+      if (!confirmed) {
+        const msg = "Run cancelled: possible duplicate FASTQ inputs were not confirmed.";
+        s.appendLog({ text: msg, tag: "warning" });
+        s.cancelRun();
+        return;
+      }
+      s.appendLog({ text: `Possible duplicates confirmed by user: ${details}`, tag: "warning" });
     }
 
     s.appendLog({
@@ -156,21 +184,14 @@ export function RunStep() {
       // (multiplexed mode). For per-round Drive picks we read from the
       // DriveAuthProvider's sessionStorage cache so a Configure-time pick
       // still has a valid token to ship to the worker.
-      let driveToken = (window as unknown as { __drive_token?: string }).__drive_token;
-      if (!driveToken && jobDriveFiles.length > 0) {
-        try {
-          const raw = sessionStorage.getItem("cdna_drive_token");
-          if (raw) {
-            const parsed = JSON.parse(raw) as { token?: string; expiresAt?: number };
-            if (parsed.token && (parsed.expiresAt ?? 0) > Date.now()) {
-              driveToken = parsed.token;
-            }
-          }
-        } catch {
-          /* fall through; the worker will surface the missing-token error */
-        }
+      let driveToken: string | undefined;
+      let driveAuth: DriveAuthProvider | undefined;
+      if (jobDriveFiles.length > 0) {
+        if (!CLIENT_ID) throw new Error("Google Drive OAuth is not configured.");
+        driveAuth = new DriveAuthProvider({ clientId: CLIENT_ID });
+        driveToken = await driveAuth.getToken();
       }
-      const outcome = await runInWorker(
+      const outcome = await runInCdnaWorker(
         {
           localFiles: jobLocalFiles,
           driveFiles: jobDriveFiles,
@@ -195,6 +216,7 @@ export function RunStep() {
           },
           pseudocount: s.pseudocount,
           useWasm: s.useWasm,
+          reference: s.referenceSeq,
           mode: s.pipelineMode,
           ...(sourceRoundIndices ? { sourceRoundIndices } : {}),
         },
@@ -203,6 +225,7 @@ export function RunStep() {
         // snapshots, library-median diagnostic, FDR summary. Each entry is
         // appended verbatim to the UI's terminal log panel.
         (m) => useRunStore.getState().appendLog({ text: m.text, tag: m.tag }),
+        driveAuth ? () => driveAuth!.getToken() : undefined,
       );
       const passed = Object.values(outcome.statsByRound).reduce(
         (acc, r) => acc + r.passed_qc,
@@ -229,7 +252,7 @@ export function RunStep() {
   }, []);
 
   const cancel = useCallback(() => {
-    terminateWorker();
+    terminateCdnaWorker();
     const s = useRunStore.getState();
     s.cancelRun();
     s.appendLog({ text: "Cancelled by user — worker terminated.", tag: "warning" });
@@ -253,9 +276,9 @@ export function RunStep() {
               {status === "cancelled" && "Cancelled."}
             </CardDescription>
           </div>
-          {status === "idle" && (
+          {status !== "running" && status !== "done" && (
             <Button size="lg" onClick={start}>
-              <Play className="mr-1.5 h-4 w-4" /> Start
+              <Play className="mr-1.5 h-4 w-4" /> {status === "idle" ? "Start" : "Run again"}
             </Button>
           )}
           {status === "running" && (
@@ -350,22 +373,37 @@ function OverallProgress() {
     let t = 0;
     if (pipelineMode === "per-round") {
       for (const r of rounds) {
-        if (r.file) t += r.file.size;
-        else if (r.driveRef?.sizeBytes != null) t += r.driveRef.sizeBytes;
+        for (const source of r.sources) {
+          if (source.file && !isGzipFastq(source.file.name)) t += source.file.size;
+          else if (source.driveRef?.sizeBytes != null && !isGzipFastq(source.driveRef.name)) t += source.driveRef.sizeBytes;
+        }
       }
     } else {
-      for (const f of localFiles) t += f.size;
-      for (const d of driveFiles) if (d.sizeBytes != null) t += d.sizeBytes;
+      for (const f of localFiles) if (!isGzipFastq(f.name)) t += f.size;
+      for (const d of driveFiles) if (d.sizeBytes != null && !isGzipFastq(d.name)) t += d.sizeBytes;
     }
     return t;
   }, [pipelineMode, rounds, localFiles, driveFiles]);
 
+  const hasUnknownTotal = useMemo(() => {
+    if (pipelineMode === "per-round") {
+      return rounds.some((round) => round.sources.some((source) =>
+        (source.file && isGzipFastq(source.file.name)) ||
+        (source.driveRef && (source.driveRef.sizeBytes == null || isGzipFastq(source.driveRef.name))),
+      ));
+    }
+    return localFiles.some((file) => isGzipFastq(file.name)) ||
+      driveFiles.some((file) => file.sizeBytes == null || isGzipFastq(file.name));
+  }, [pipelineMode, rounds, localFiles, driveFiles]);
+
   let bytesDone = 0;
   for (const v of Object.values(perSourceBytes)) bytesDone += v;
-  const pct = totalKnownBytes > 0 ? Math.min(100, (bytesDone / totalKnownBytes) * 100) : 0;
+  const pct = totalKnownBytes > 0 && !hasUnknownTotal
+    ? Math.min(100, (bytesDone / totalKnownBytes) * 100)
+    : 0;
   const elapsed = startedAt ? ((finishedAt ?? performance.now()) - startedAt) / 1000 : 0;
   // ETA: remaining-bytes × seconds-per-byte. Avoid div-by-zero at startup.
-  const eta = totalKnownBytes > 0 && bytesDone > 1024 * 1024 && status === "running"
+  const eta = totalKnownBytes > 0 && !hasUnknownTotal && bytesDone > 1024 * 1024 && status === "running"
     ? Math.max(0, ((totalKnownBytes - bytesDone) / bytesDone) * elapsed)
     : null;
 
@@ -374,7 +412,9 @@ function OverallProgress() {
       <div className="flex items-center justify-between text-xs">
         <span className="font-medium">Overall</span>
         <span className="font-mono text-muted-foreground">
-          {pct.toFixed(1)}% · {formatBytes(bytesDone)} / {formatBytes(totalKnownBytes)} ·{" "}
+          {hasUnknownTotal
+            ? `${formatBytes(bytesDone)} processed · total unknown`
+            : `${pct.toFixed(1)}% · ${formatBytes(bytesDone)} / ${formatBytes(totalKnownBytes)}`} ·{" "}
           {formatDuration(elapsed)} elapsed
           {eta != null && ` · ETA ${formatDuration(eta)}`}
         </span>
@@ -383,6 +423,8 @@ function OverallProgress() {
     </div>
   );
 }
+
+function isGzipFastq(name: string): boolean { return /\.gz$/i.test(name); }
 
 function PerFileProgress({
   index,

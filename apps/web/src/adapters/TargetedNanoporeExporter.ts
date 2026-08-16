@@ -100,6 +100,7 @@ export function buildRunStats(outcome: TargetedNanoporeOutcome, snapshot: Target
     ])),
     combinationStatistics: outcome.haplotypeStatistics,
     libraryMedianEnrichment: outcome.libraryMedianFitness, hitCounts: outcome.hitCounts,
+    ...(outcome.provenance ? { provenance: outcome.provenance } : {}),
     statisticalModel: {
       level: "amino acid",
       referenceStateHandling: "analyzed as an ordinary AA state; never used as a special denominator",

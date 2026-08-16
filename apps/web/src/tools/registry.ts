@@ -2,13 +2,31 @@
 // exports a Tool from its module and is listed here. The header switcher
 // (App.tsx) renders one entry per tool in this array.
 
-import type { Tool } from "./types";
-import { cdnaDisplayTool } from "./cdna-display";
-import { nanoporeTool } from "./nanopore-targeted";
+import { Dna, ScanLine } from "lucide-react";
+import type { ToolRegistration } from "./types";
 
-export const tools: ReadonlyArray<Tool> = [cdnaDisplayTool, nanoporeTool];
+export const tools: ReadonlyArray<ToolRegistration> = [
+  {
+    id: "cdna-display",
+    name: "cDNA-DISPLAY Analyzer",
+    shortName: "NGS",
+    description:
+      "Demultiplex + enrichment of cDNA/mRNA-display NGS selection rounds, streamed in-browser.",
+    icon: Dna,
+    load: () => import("./cdna-display").then((module) => module.cdnaDisplayTool),
+  },
+  {
+    id: "nanopore-targeted",
+    name: "Nanopore Analyzer",
+    shortName: "Nanopore",
+    description:
+      "Full-amplicon QC and Round 0-normalized enrichment for researcher-defined target codons.",
+    icon: ScanLine,
+    load: () => import("./nanopore-targeted").then((module) => module.nanoporeTool),
+  },
+];
 export const DEFAULT_TOOL_ID = "cdna-display";
 
-export function toolById(id: string): Tool {
+export function toolById(id: string): ToolRegistration {
   return tools.find((t) => t.id === id) ?? tools[0]!;
 }

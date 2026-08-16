@@ -11,10 +11,20 @@ import {
   estimateReferenceOffsetIndexed,
   type TargetedAlignment,
 } from "./targeted-align.js";
-import { buildProtectedMask, buildTargetHaplotype, callTargetSites } from "./targeted-caller.js";
+import {
+  buildProtectedMask,
+  buildTargetHaplotype,
+  buildTargetedReadProjection,
+  callTargetSites,
+  createTargetedProjectionWorkspace,
+  type TargetedReadProjection,
+} from "./targeted-caller.js";
 import { evaluateTargetedQc, type TargetedQcFailure, type TargetedQcSettings } from "./targeted-qc.js";
 import { resolveDoradoReadQ } from "./targeted-qscore.js";
 import { resolveTargetSites, type ResolvedTargetSite, type TargetSiteInput } from "./targeted-types.js";
+import { TargetedReadIdSet } from "./targeted-read-ids.js";
+import { createWasmTargetedAligner } from "./targeted-wasm.js";
+import type { WasmTargetedAlignerLike } from "./targeted-wasm.js";
 
 const ENC = new TextEncoder();
 const DEC = new TextDecoder("latin1");
@@ -35,6 +45,9 @@ export interface TargetedPipelineRequest {
   settings: TargetedPipelineSettings;
   /** Test/diagnostic cap. Production Web runs omit this and stream to EOF. */
   maxReadsPerSource?: number;
+  /** Candidate full-length Rust/WASM path. Keep false/omitted until the
+   * frozen parity, speed and RSS gates have passed on the real development set. */
+  useWasmAlignment?: boolean;
   onProgress?: (event: TargetedPipelineProgress) => void;
   onLog?: (event: TargetedPipelineLogEvent) => void;
   signal?: AbortSignal;
@@ -73,6 +86,14 @@ export interface TargetedPipelineResult {
   exactHaplotypeCsvParts: string[];
 }
 
+interface AlignmentCandidate {
+  reverse: boolean;
+  sequence: Uint8Array;
+  quality: Uint8Array;
+  alignment: TargetedAlignment;
+  qc: ReturnType<typeof evaluateTargetedQc>;
+}
+
 async function* streamToAsyncIter(stream: ReadableStream<Uint8Array>, signal: AbortSignal | undefined, onChunk: (n: number) => void): AsyncIterable<Uint8Array> {
   const reader = stream.getReader();
   try {
@@ -109,22 +130,40 @@ export async function runTargetedNanoporePipeline(req: TargetedPipelineRequest):
   );
   const reference = ENC.encode(refString);
   const seedIndex = createTargetedReferenceSeedIndex(reference);
+  const wasmAligner = req.useWasmAlignment
+    ? createWasmTargetedAligner(reference)
+    : undefined;
+  try {
   const protectedMask = buildProtectedMask(reference.length, sites);
   const dnaCounters = new Map<string, Map<string, Map<string, number>>>();
   const haplotypeCounters = new Map<string, Map<string, number>>();
   const stats = new Map<string, TargetedRoundRunStats>();
-  const seenByRound = new Map<string, Set<string>>();
   for (const round of req.roundNames) {
     dnaCounters.set(round, new Map(sites.map((s) => [s.name, new Map()])));
     haplotypeCounters.set(round, new Map());
     stats.set(round, emptyRoundStats(sites));
-    seenByRound.set(round, new Set());
   }
-  const fileStats: TargetedFileStats[] = [];
-  for (let sourceIndex = 0; sourceIndex < req.sources.length; sourceIndex++) {
+  const fileStats = new Array<TargetedFileStats>(req.sources.length);
+  // Group sources by round while preserving their original order inside each
+  // round. This lets the exact read-ID set be released after each round.
+  const sourceOrder = req.sources.map((_, index) => index).sort((left, right) =>
+    req.sourceRoundIndices[left]! - req.sourceRoundIndices[right]! || left - right
+  );
+  let activeRound = "";
+  let seen = new TargetedReadIdSet();
+  let sequenceScratch = new Uint8Array(2048);
+  let reverseScratch = new Uint8Array(2048);
+  let reverseQualityScratch = new Uint8Array(2048);
+  const offsetScratch: number[] = [];
+  const projectionWorkspace = createTargetedProjectionWorkspace(reference.length);
+  for (const sourceIndex of sourceOrder) {
     const source = req.sources[sourceIndex]!;
     const round = req.roundNames[req.sourceRoundIndices[sourceIndex]!]!;
     if (!round) throw new Error(`Source ${sourceIndex} has an invalid round binding.`);
+    if (round !== activeRound) {
+      activeRound = round;
+      seen = new TargetedReadIdSet();
+    }
     const desc = source.describe();
     const sourceStartedAt = Date.now();
     log(
@@ -133,17 +172,20 @@ export async function runTargetedNanoporePipeline(req: TargetedPipelineRequest):
     );
     const stream = await source.open(req.signal);
     const roundStats = stats.get(round)!;
-    const seen = seenByRound.get(round)!;
     const perFile = emptyFileStats(desc.name, round);
-    fileStats.push(perFile);
-    let bytesProcessed = 0, recordsProcessed = 0, lastReportedBytes = 0;
-    req.onProgress?.({ sourceIndex, bytesProcessed: 0, totalBytes: desc.sizeBytes, recordsProcessed: 0 });
+    fileStats[sourceIndex] = perFile;
+    let bytesProcessed = 0, recordsProcessed = 0, lastProgressAt = 0;
+    const emitProgress = (force = false): void => {
+      if (!req.onProgress) return;
+      const now = performance.now();
+      if (!force && now - lastProgressAt < 200) return;
+      lastProgressAt = now;
+      req.onProgress({ sourceIndex, bytesProcessed, totalBytes: desc.sizeBytes, recordsProcessed });
+    };
+    emitProgress(true);
     const chunks = streamToAsyncIter(stream, req.signal, (n) => {
       bytesProcessed += n;
-      if (bytesProcessed - lastReportedBytes >= 1024 * 1024) {
-        lastReportedBytes = bytesProcessed;
-        req.onProgress?.({ sourceIndex, bytesProcessed, totalBytes: desc.sizeBytes, recordsProcessed });
-      }
+      emitProgress();
     });
     for await (const rec of readFastqRecordsResilient(chunks)) {
       if (req.maxReadsPerSource != null && recordsProcessed >= req.maxReadsPerSource) break;
@@ -154,12 +196,11 @@ export async function runTargetedNanoporePipeline(req: TargetedPipelineRequest):
         continue;
       }
       const readId = canonicalReadId(rec.header);
-      if (seen.has(readId)) {
+      if (!seen.add(readId)) {
         perFile.duplicateReadIds++; roundStats.duplicate_read_ids++;
         bump(perFile.primaryDropReasons, "duplicate_read_id"); bump(roundStats.primary_drop_reasons, "duplicate_read_id");
         continue;
       }
-      seen.add(readId);
       const q = resolveDoradoReadQ(rec.header, rec.qual);
       if (q.effective < req.settings.minReadQ) {
         bump(roundStats.qc_failures, "low_read_q"); bump(perFile.primaryDropReasons, "low_read_q"); bump(roundStats.primary_drop_reasons, "low_read_q");
@@ -173,33 +214,89 @@ export async function runTargetedNanoporePipeline(req: TargetedPipelineRequest):
         bump(roundStats.primary_drop_reasons, "concatemer_or_chimera");
         continue;
       }
-      let seq = uppercaseInto(rec.seq, new Uint8Array(rec.seq.length));
-      let qual = rec.qual;
-      let alignment: TargetedAlignment;
-      try {
-        const rc = rcInto(seq, new Uint8Array(seq.length));
-        const fwEstimate = estimateReferenceOffsetIndexed(seedIndex, seq);
-        const rcEstimate = estimateReferenceOffsetIndexed(seedIndex, rc);
-        if (rcEstimate.hits > fwEstimate.hits) { seq = rc; qual = reverseInto(rec.qual, new Uint8Array(rec.qual.length)); }
-        alignment = alignTargetedReferenceWithEstimate(reference, seq, rcEstimate.hits > fwEstimate.hits ? rcEstimate : fwEstimate);
-        if (fwEstimate.hits === rcEstimate.hits) {
-          const otherSeq = rcInto(seq, new Uint8Array(seq.length));
-          const other = alignTargetedReferenceWithEstimate(reference, otherSeq, rcEstimate);
-          if (other.score > alignment.score) { seq = otherSeq; qual = reverseInto(qual, new Uint8Array(qual.length)); alignment = other; }
-        }
-      } catch {
+      if (rec.seq.length > sequenceScratch.length) {
+        sequenceScratch = new Uint8Array(rec.seq.length);
+        reverseScratch = new Uint8Array(rec.seq.length);
+        reverseQualityScratch = new Uint8Array(rec.qual.length);
+      } else if (rec.qual.length > reverseQualityScratch.length) {
+        reverseQualityScratch = new Uint8Array(rec.qual.length);
+      }
+      const forwardSequence = uppercaseInto(rec.seq, sequenceScratch);
+      const reverseSequence = rcInto(forwardSequence, reverseScratch);
+      const reverseQuality = reverseInto(rec.qual, reverseQualityScratch);
+      const forwardEstimate = wasmAligner
+        ? wasmAligner.estimate(forwardSequence)
+        : estimateReferenceOffsetIndexed(seedIndex, forwardSequence, offsetScratch);
+      const reverseEstimate = wasmAligner
+        ? wasmAligner.estimate(reverseSequence)
+        : estimateReferenceOffsetIndexed(seedIndex, reverseSequence, offsetScratch);
+      const primaryReverse = reverseEstimate.hits > forwardEstimate.hits;
+      const primary = makeAlignmentCandidate(
+        primaryReverse,
+        reference,
+        forwardSequence,
+        rec.qual,
+        forwardEstimate,
+        reverseSequence,
+        reverseQuality,
+        reverseEstimate,
+        protectedMask,
+        q.effective,
+        req.settings,
+        wasmAligner,
+      );
+      let alternate: AlignmentCandidate | null = null;
+      if (
+        !primary ||
+        !primary.qc.passed ||
+        Math.abs(forwardEstimate.hits - reverseEstimate.hits) <= 2
+      ) {
+        alternate = makeAlignmentCandidate(
+          !primaryReverse,
+          reference,
+          forwardSequence,
+          rec.qual,
+          forwardEstimate,
+          reverseSequence,
+          reverseQuality,
+          reverseEstimate,
+          protectedMask,
+          q.effective,
+          req.settings,
+          wasmAligner,
+        );
+      }
+      if (!primary && !alternate) {
         bump(perFile.primaryDropReasons, "alignment_failed"); bump(roundStats.primary_drop_reasons, "alignment_failed");
         continue;
       }
+      const selected = chooseAlignmentCandidate(primary, alternate)!;
+      const seq = selected.sequence;
+      const qual = selected.quality;
+      const alignment = selected.alignment;
       perFile.aligned++; roundStats.aligned++;
-      const qc = evaluateTargetedQc(alignment, protectedMask, q.effective, req.settings);
+      const qc = selected.qc;
       for (const failure of qc.failures) bump(roundStats.qc_failures, failure);
       if (qc.passed) { perFile.fullQcPassed++; roundStats.full_qc_passed++; }
       else { const reason = primaryFailure(qc.failures); bump(perFile.primaryDropReasons, reason); bump(roundStats.primary_drop_reasons, reason); }
-      const calls = callTargetSites(reference, seq, qual, alignment, sites, { minBaseQ: req.settings.minTargetBaseQ });
+      const projection = buildTargetedReadProjection(
+        reference.length,
+        seq.length,
+        alignment,
+        projectionWorkspace,
+      );
+      const calls = callTargetSites(
+        reference,
+        seq,
+        qual,
+        alignment,
+        sites,
+        { minBaseQ: req.settings.minTargetBaseQ },
+        projection,
+      );
       for (let i = 0; i < calls.length; i++) {
         const call = calls[i]!, site = sites[i]!, ss = roundStats.sites[site.name]!;
-        const rescued = !qc.passed && isLocallyRescuable(alignment, site, protectedMask, req.settings);
+        const rescued = !qc.passed && isLocallyRescuable(projection, site, protectedMask, req.settings);
         if (call.status === "low_quality") ss.low_quality++;
         else if (call.status === "target_insertion" || call.status === "target_deletion") ss.target_indel++;
         else if (call.status === "not_covered") ss.not_covered++;
@@ -224,7 +321,7 @@ export async function runTargetedNanoporePipeline(req: TargetedPipelineRequest):
         }
       }
     }
-    req.onProgress?.({ sourceIndex, bytesProcessed, totalBytes: desc.sizeBytes, recordsProcessed });
+    emitProgress(true);
     const drops = Object.entries(perFile.primaryDropReasons)
       .filter(([, count]) => count > 0)
       .sort((a, b) => b[1] - a[1])
@@ -291,6 +388,55 @@ export async function runTargetedNanoporePipeline(req: TargetedPipelineRequest):
     zeroCoverage.length > 0 ? "error" : "success",
   );
   return { dnaCounters, haplotypeCounters, stats, fileStats, resolvedSites: sites, analyzer, exactCodonCsvParts, exactHaplotypeCsvParts };
+  } finally {
+    wasmAligner?.free();
+  }
+}
+
+function makeAlignmentCandidate(
+  reverse: boolean,
+  reference: Uint8Array,
+  forwardSequence: Uint8Array,
+  forwardQuality: Uint8Array,
+  forwardEstimate: ReturnType<typeof estimateReferenceOffsetIndexed>,
+  reverseSequence: Uint8Array,
+  reverseQuality: Uint8Array,
+  reverseEstimate: ReturnType<typeof estimateReferenceOffsetIndexed>,
+  protectedMask: Uint8Array,
+  readQ: number,
+  settings: TargetedPipelineSettings,
+  wasmAligner?: WasmTargetedAlignerLike,
+): AlignmentCandidate | null {
+  try {
+    const sequence = reverse ? reverseSequence : forwardSequence;
+    const quality = reverse ? reverseQuality : forwardQuality;
+    const estimate = reverse ? reverseEstimate : forwardEstimate;
+    const alignment = wasmAligner
+      ? wasmAligner.alignWithEstimate(sequence, estimate)
+      : alignTargetedReferenceWithEstimate(reference, sequence, estimate);
+    return {
+      reverse,
+      sequence,
+      quality,
+      alignment,
+      qc: evaluateTargetedQc(alignment, protectedMask, readQ, settings),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function chooseAlignmentCandidate(
+  first: AlignmentCandidate | null,
+  second: AlignmentCandidate | null,
+): AlignmentCandidate | null {
+  if (!first) return second;
+  if (!second) return first;
+  if (first.qc.passed !== second.qc.passed) return first.qc.passed ? first : second;
+  if (first.alignment.score !== second.alignment.score) {
+    return first.alignment.score > second.alignment.score ? first : second;
+  }
+  return first.reverse ? second : first;
 }
 
 function elapsed(startedAt: number): string {
@@ -368,20 +514,18 @@ function buildExactHaplotypeCsv(
   return serializeCsv(rows, columns);
 }
 
-function isLocallyRescuable(alignment: TargetedAlignment, site: ResolvedTargetSite, mask: Uint8Array, settings: TargetedPipelineSettings): boolean {
+function isLocallyRescuable(projection: TargetedReadProjection, site: ResolvedTargetSite, mask: Uint8Array, settings: TargetedPipelineSettings): boolean {
   const flank = settings.rescueFlankBases ?? 30, lo = site.start0 - flank, hi = site.end0 + flank;
   if (lo < 0 || hi > mask.length) return false;
-  let ref = 0, matches = 0, errors = 0, left = 0, right = 0;
-  for (const op of alignment.cigar) {
-    if (op.code === "I") { if (ref >= lo && ref <= hi) errors += op.length; continue; }
-    for (let k = 0; k < op.length; k++, ref++) {
-      if (ref < lo || ref >= hi || mask[ref] !== 1) continue;
-      if (op.code === "M") matches++; else errors++;
-      // M/X consume a read base; D does not. A terminal deletion must never
-      // masquerade as covered rescue flank.
-      if (op.code !== "D") {
-        if (ref < site.start0) left++; else if (ref >= site.end0) right++;
-      }
+  let matches = 0, errors = 0, left = 0, right = 0;
+  for (let ref = lo; ref < hi; ref++) {
+    errors += projection.insertionBefore[ref] ?? 0;
+    if (mask[ref] !== 1) continue;
+    const op = projection.opAtRef[ref];
+    if (op === 1) matches++;
+    else if (op === 2 || op === 3) errors++;
+    if (op === 1 || op === 2) {
+      if (ref < site.start0) left++; else if (ref >= site.end0) right++;
     }
   }
   return left >= flank && right >= flank && matches / (matches + errors) >= settings.minProtectedIdentity;

@@ -13,7 +13,7 @@ import type {
 } from "../src/worker/types";
 
 describe("web run guards", () => {
-  it("blocks duplicate local content across distinct File objects and names", async () => {
+  it("classifies sampled local matches as probable rather than exact", async () => {
     const content = "@r\nACGT\n+\nIIII\n";
     const groups = await findDuplicateFastqGroups(
       [
@@ -22,7 +22,10 @@ describe("web run guards", () => {
       ],
       [],
     );
-    expect(groups).toEqual([["Round 0", "Round 1"]]);
+    expect(groups).toEqual({
+      exactGroups: [],
+      probableGroups: [["Round 0", "Round 1"]],
+    });
   });
 
   it("allows same-name shards with different content and blocks repeated Drive IDs", async () => {
@@ -36,7 +39,19 @@ describe("web run guards", () => {
         { file: { id: "same-id", name: "b.fastq", sizeBytes: 10 }, label: "Drive B" },
       ],
     );
-    expect(groups).toEqual([["Drive A", "Drive B"]]);
+    expect(groups).toEqual({
+      exactGroups: [["Drive A", "Drive B"]],
+      probableGroups: [],
+    });
+  });
+
+  it("rejects the same local File object exactly", async () => {
+    const file = new File(["@a\nA\n+\nI\n"], "reads.fastq");
+    const groups = await findDuplicateFastqGroups(
+      [{ file, label: "A" }, { file, label: "B" }],
+      [],
+    );
+    expect(groups.exactGroups).toEqual([["A", "B"]]);
   });
 
   it("identifies every zero denominator required by each web result", () => {

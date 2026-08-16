@@ -15,26 +15,35 @@ export interface LabeledDriveFastq {
   label: string;
 }
 
-/** Detect duplicate inputs without reading whole multi-GB FASTQs.
- *
- * Local identity uses SHA-256 over file size plus the first/last 64 KiB.
- * This detects the same physical content even when a new File object or a
- * renamed copy is selected, while allowing same-name shards with different
- * content. Drive has a stable file ID and does not need content sampling.
- */
+export interface FastqDuplicateCheck {
+  /** Certain duplicates: the identical File object or identical Drive ID. */
+  exactGroups: string[][];
+  /** Same size + sampled head/tail SHA-256. This is deliberately not called a
+   * full content hash and must be confirmed by the user rather than blocked. */
+  probableGroups: string[][];
+}
+
+/** Detect exact and probable duplicate inputs without reading whole FASTQs. */
 export async function findDuplicateFastqGroups(
   local: ReadonlyArray<LabeledLocalFastq>,
   drive: ReadonlyArray<LabeledDriveFastq>,
-): Promise<string[][]> {
-  const labelsByKey = new Map<string, string[]>();
-  const add = (key: string, label: string): void => {
-    labelsByKey.set(key, [...(labelsByKey.get(key) ?? []), label]);
+): Promise<FastqDuplicateCheck> {
+  const exactLabels = new Map<object | string, string[]>();
+  const addExact = (key: object | string, label: string): void => {
+    exactLabels.set(key, [...(exactLabels.get(key) ?? []), label]);
   };
+  for (const source of local) addExact(source.file, source.label);
+  for (const source of drive) addExact(`drive:${source.file.id}`, source.label);
+
+  const probableLabels = new Map<string, string[]>();
   for (const source of local) {
-    add(`local:${await sampledLocalFingerprint(source.file)}`, source.label);
+    const key = await sampledLocalFingerprint(source.file);
+    probableLabels.set(key, [...(probableLabels.get(key) ?? []), source.label]);
   }
-  for (const source of drive) add(`drive:${source.file.id}`, source.label);
-  return [...labelsByKey.values()].filter((labels) => labels.length > 1);
+  return {
+    exactGroups: [...exactLabels.values()].filter((labels) => labels.length > 1),
+    probableGroups: [...probableLabels.values()].filter((labels) => labels.length > 1),
+  };
 }
 
 export function cdnaZeroCoverage(outcome: PipelineOutcome): string[] {

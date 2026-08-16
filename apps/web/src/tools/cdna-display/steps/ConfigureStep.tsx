@@ -2,7 +2,7 @@ import { useRef, useState } from "react";
 import { ArrowLeft, ArrowRight, Plus, Trash2, FileUp, X, Cloud } from "lucide-react";
 import { DriveAuthProvider } from "@/adapters/DriveAuthProvider";
 import { showDrivePicker } from "@/adapters/DrivePicker";
-import type { DriveFileRef } from "@/state/useRunStore";
+import type { CdnaRoundSource, DriveFileRef } from "@/state/useRunStore";
 import { useRunStore } from "@/state/useRunStore";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -69,14 +69,20 @@ export function ConfigureStep() {
   const duplicateMultiplexedPrimers =
     !perRound &&
     new Set(populatedFwPrimers).size !== populatedFwPrimers.length;
-  const allRoundsValid = !duplicateRoundNames && !duplicateMultiplexedPrimers && rounds.every(
+  const allRoundSources = rounds.flatMap((round) => round.sources);
+  const localSourceObjects = allRoundSources.flatMap((source) => source.file ? [source.file] : []);
+  const driveSourceIds = allRoundSources.flatMap((source) => source.driveRef ? [source.driveRef.id] : []);
+  const duplicatePerRoundSources =
+    new Set(localSourceObjects).size !== localSourceObjects.length ||
+    new Set(driveSourceIds).size !== driveSourceIds.length;
+  const allRoundsValid = !duplicateRoundNames && !duplicateMultiplexedPrimers && !duplicatePerRoundSources && rounds.every(
     (r) =>
       validateRoundName(r.name) == null &&
       validatePrimer(r.fwPrimer, "Forward") == null &&
       validatePrimer(r.rvPrimer, "Reverse") == null &&
       // In per-round mode, every round must have a FASTQ bound to it —
       // either local file OR drive ref.
-      (!perRound || r.file != null || r.driveRef != null),
+      (!perRound || r.sources.some((source) => source.file != null || source.driveRef != null)),
   );
   const settingsValid =
     Number.isFinite(minMeanPhred) &&
@@ -145,7 +151,7 @@ export function ConfigureStep() {
               Rounds
               {perRound && (
                 <Badge variant="outline" className="font-normal">
-                  per-round mode · each round picks its own FASTQ
+                  per-round mode · one or more technical shards per round
                 </Badge>
               )}
             </CardTitle>
@@ -242,12 +248,8 @@ export function ConfigureStep() {
               </div>
               {perRound && (
                 <RoundFilePicker
-                  file={r.file}
-                  driveRef={r.driveRef}
-                  expectedFileName={r.expectedFileName}
-                  onPickLocal={(f) => updateRound(r.id, { file: f, driveRef: null })}
-                  onPickDrive={(d) => updateRound(r.id, { file: null, driveRef: d })}
-                  onClear={() => updateRound(r.id, { file: null, driveRef: null })}
+                  sources={r.sources}
+                  onChange={(sources) => updateRound(r.id, { sources })}
                 />
               )}
               <p className="text-xs text-muted-foreground">
@@ -263,6 +265,11 @@ export function ConfigureStep() {
           {duplicateMultiplexedPrimers && (
             <p className="text-xs text-destructive">
               Multiplexed rounds need distinct forward primers; identical primers make assignment ambiguous.
+            </p>
+          )}
+          {duplicatePerRoundSources && (
+            <p className="text-xs text-destructive">
+              The same local file object or Drive file ID cannot be assigned to more than one round.
             </p>
           )}
         </CardContent>
@@ -392,19 +399,11 @@ const CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID as string | undefined;
 const API_KEY = import.meta.env.VITE_GOOGLE_API_KEY as string | undefined;
 
 function RoundFilePicker({
-  file,
-  driveRef,
-  expectedFileName,
-  onPickLocal,
-  onPickDrive,
-  onClear,
+  sources,
+  onChange,
 }: {
-  file: File | null;
-  driveRef: DriveFileRef | null;
-  expectedFileName: string | null;
-  onPickLocal: (f: File) => void;
-  onPickDrive: (d: DriveFileRef) => void;
-  onClear: () => void;
+  sources: CdnaRoundSource[];
+  onChange: (sources: CdnaRoundSource[]) => void;
 }) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [error, setError] = useState<string | null>(null);
@@ -412,30 +411,51 @@ function RoundFilePicker({
   const [drivePicking, setDrivePicking] = useState(false);
   const driveConfigured = !!(CLIENT_ID && API_KEY);
   const driveSignedIn = isDriveSignedIn();
-  const hasSource = file != null || driveRef != null;
-  const actualFileName = file?.name ?? driveRef?.name ?? null;
-  const lockedNameMismatch =
-    actualFileName != null &&
-    expectedFileName != null &&
-    actualFileName !== expectedFileName;
+  const actualCount = sources.filter((source) => source.file || source.driveRef).length;
 
-  const handleLocal = async (f: File) => {
+  const attach = (
+    incoming: Array<{ file: File | null; driveRef: DriveFileRef | null }>,
+  ): CdnaRoundSource[] => {
+    const next = sources.map((source) => ({ ...source }));
+    const unmatched: typeof incoming = [];
+    for (const source of incoming) {
+      const name = source.file?.name ?? source.driveRef?.name ?? "";
+      const exact = next.findIndex((slot) =>
+        !slot.file && !slot.driveRef && slot.expectedFileName === name
+      );
+      if (exact >= 0) next[exact] = { ...next[exact]!, ...source };
+      else unmatched.push(source);
+    }
+    for (const source of unmatched) {
+      const empty = next.findIndex((slot) => !slot.file && !slot.driveRef);
+      if (empty >= 0) next[empty] = { ...next[empty]!, ...source };
+      else next.push({
+        id: `source_${crypto.randomUUID()}`,
+        ...source,
+        expectedFileName: null,
+      });
+    }
+    return next.slice(0, LIMITS.FASTQ_FILES_MAX);
+  };
+
+  const handleLocal = async (files: File[]) => {
     setError(null);
     setWarning(null);
-    const sync = validateFastqFileSync(f);
-    if (!sync.ok) {
-      setError(sync.reason ?? "File rejected.");
-      return;
+    const accepted: File[] = [];
+    const issues: string[] = [];
+    for (const file of files) {
+      const sync = validateFastqFileSync(file);
+      if (!sync.ok) { issues.push(`${file.name}: ${sync.reason ?? "File rejected."}`); continue; }
+      const peek = await peekFastq(file);
+      if (!peek.ok && peek.level === "error") {
+        issues.push(`${file.name}: ${peek.reason ?? "File rejected."}`);
+        continue;
+      }
+      if (peek.level === "warning" && peek.reason) issues.push(`${file.name}: ${peek.reason}`);
+      accepted.push(file);
     }
-    const peek = await peekFastq(f);
-    if (!peek.ok && peek.level === "error") {
-      setError(peek.reason ?? "File rejected.");
-      return;
-    }
-    if (peek.level === "warning" && peek.reason) {
-      setWarning(peek.reason);
-    }
-    onPickLocal(f);
+    if (issues.length) setWarning(issues.join(" "));
+    if (accepted.length) onChange(attach(accepted.map((file) => ({ file, driveRef: null }))));
   };
 
   const handleDrive = async () => {
@@ -465,13 +485,15 @@ function RoundFilePicker({
         appId: projectNumber,
       });
       if (picked.length === 0) return;
-      const first = picked[0]!;
-      const check = validateDriveFastqRef(first);
-      if (!check.ok) {
-        setError(`${first.name || "(unnamed file)"}: ${check.reason}`);
-        return;
+      const accepted: DriveFileRef[] = [];
+      const rejected: string[] = [];
+      for (const file of picked) {
+        const check = validateDriveFastqRef(file);
+        if (!check.ok) rejected.push(`${file.name || "(unnamed file)"}: ${check.reason}`);
+        else accepted.push({ id: file.id, name: file.name, sizeBytes: file.sizeBytes });
       }
-      onPickDrive({ id: first.id, name: first.name, sizeBytes: first.sizeBytes });
+      if (rejected.length) setWarning(rejected.join(" "));
+      if (accepted.length) onChange(attach(accepted.map((driveRef) => ({ file: null, driveRef }))));
     } catch (e) {
       setError(`Drive pick failed: ${(e as Error).message}`);
     } finally {
@@ -481,21 +503,21 @@ function RoundFilePicker({
 
   return (
     <div className="rounded-md border bg-muted/30 p-3">
-      <Label className="text-xs">FASTQ for this round</Label>
+      <Label className="text-xs">FASTQ technical shards for this round</Label>
       <div className="mt-1.5 flex flex-wrap items-center gap-2">
         <Button
           type="button"
-          variant={hasSource && file ? "outline" : !hasSource ? "default" : "outline"}
+          variant={actualCount === 0 ? "default" : "outline"}
           size="sm"
           onClick={() => inputRef.current?.click()}
         >
           <FileUp className="mr-1.5 h-3.5 w-3.5" />
-          {file ? "Replace local…" : "Pick local…"}
+          Add local shard(s)…
         </Button>
         {driveConfigured && (
           <Button
             type="button"
-            variant={driveRef ? "outline" : "outline"}
+            variant="outline"
             size="sm"
             disabled={!driveSignedIn || drivePicking}
             onClick={() => void handleDrive()}
@@ -506,79 +528,50 @@ function RoundFilePicker({
             }
           >
             <Cloud className="mr-1.5 h-3.5 w-3.5" />
-            {drivePicking ? "Opening…" : driveRef ? "Replace Drive…" : "Pick from Drive…"}
+            {drivePicking ? "Opening…" : "Add Drive shard(s)…"}
           </Button>
         )}
         <input
           ref={inputRef}
           type="file"
-          accept=".fastq,.fq"
+          multiple
+          accept=".fastq,.fq,.fastq.gz,.fq.gz"
           className="hidden"
           onChange={(e) => {
-            const f = e.target.files?.[0];
-            if (f) void handleLocal(f);
+            const files = Array.from(e.target.files ?? []);
+            if (files.length) void handleLocal(files);
             if (inputRef.current) inputRef.current.value = "";
           }}
         />
-        {file && (
-          <>
-            <span className="truncate font-mono text-xs text-muted-foreground" title={file.name}>
-              {file.name}
-            </span>
-            <span className="text-xs text-muted-foreground">· {formatBytes(file.size)}</span>
-            <Button
-              type="button"
-              size="sm"
-              variant="ghost"
-              onClick={() => {
-                setError(null);
-                setWarning(null);
-                onClear();
-              }}
-            >
-              <X className="h-3.5 w-3.5" />
-            </Button>
-          </>
-        )}
-        {driveRef && (
-          <>
-            <span
-              className="truncate font-mono text-xs text-muted-foreground"
-              title={driveRef.name}
-            >
-              <Cloud className="mr-1 inline-block h-3 w-3 text-primary" />
-              {driveRef.name}
-            </span>
-            <span className="text-xs text-muted-foreground">
-              {driveRef.sizeBytes != null ? `· ${formatBytes(driveRef.sizeBytes)}` : ""}
-            </span>
-            <Button
-              type="button"
-              size="sm"
-              variant="ghost"
-              onClick={() => {
-                setError(null);
-                setWarning(null);
-                onClear();
-              }}
-            >
-              <X className="h-3.5 w-3.5" />
-            </Button>
-          </>
-        )}
-        {!hasSource && (
+        {actualCount === 0 && (
           <span className="text-xs text-muted-foreground">
-            {expectedFileName
-              ? `Expected: ${expectedFileName} — select file`
-              : "No file bound"}
+            {sources.some((source) => source.expectedFileName)
+              ? "Expected file hint(s) below — select every shard"
+              : "No shard bound"}
           </span>
         )}
       </div>
-      {lockedNameMismatch && (
-        <p className="mt-2 text-xs text-amber-700 dark:text-amber-400">
-          Filename hint: {expectedFileName}. The selected file is accepted because sequencing-file identity is not stored; verify this round assignment.
-        </p>
-      )}
+      {sources.length > 0 && <div className="mt-2 space-y-1">
+        {sources.map((source) => {
+          const actual = source.file?.name ?? source.driveRef?.name ?? null;
+          const mismatch = actual && source.expectedFileName && actual !== source.expectedFileName;
+          return <div key={source.id} className="flex items-center justify-between gap-2 rounded bg-background px-2 py-1 text-xs">
+            <span className="min-w-0 truncate font-mono">
+              {source.driveRef ? <Cloud className="mr-1 inline-block h-3 w-3 text-primary" /> : null}
+              {actual ?? source.expectedFileName ?? "Unselected shard"}
+              {actual ? ` · ${source.file ? formatBytes(source.file.size) : source.driveRef?.sizeBytes != null ? formatBytes(source.driveRef.sizeBytes) : "size unknown"}` : " · select file"}
+              {mismatch ? ` · expected ${source.expectedFileName}` : ""}
+            </span>
+            <Button type="button" size="sm" variant="ghost" onClick={() => {
+              onChange(sources.flatMap((item) => item.id !== source.id
+                ? [item]
+                : item.expectedFileName
+                  ? [{ ...item, file: null, driveRef: null }]
+                  : []));
+            }}><X className="h-3.5 w-3.5" /></Button>
+          </div>;
+        })}
+      </div>}
       {error && <p className="mt-2 text-xs text-destructive">{error}</p>}
       {warning && !error && <p className="mt-2 text-xs text-warning">{warning}</p>}
     </div>

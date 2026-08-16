@@ -121,7 +121,7 @@ export function buildCdnaLockedConfig(snapshot: CdnaExportSnapshot) {
     ...snapshot.driveFiles.map((file) => file.name),
   ];
   return {
-    schemaVersion: "cdna-display-config/v1",
+    schemaVersion: "cdna-display-config/v2",
     calculationModel: "rpm-pseudocount-v1",
     pseudocountUnit: "RPM",
     project: snapshot.projectName,
@@ -141,10 +141,13 @@ export function buildCdnaLockedConfig(snapshot: CdnaExportSnapshot) {
       rvPrimer: round.rvPrimer,
       cdsStart: round.cdsStart,
       cdsEnd: round.cdsEnd,
-      expectedFileName:
+      expectedFileNames:
         snapshot.pipelineMode === "per-round"
-          ? round.file?.name ?? round.driveRef?.name ?? round.expectedFileName
-          : null,
+          ? round.sources.flatMap((source) => {
+              const name = source.file?.name ?? source.driveRef?.name ?? source.expectedFileName;
+              return name ? [name] : [];
+            })
+          : [],
     })),
     settings: {
       filterStop: snapshot.filterStop,
@@ -165,7 +168,8 @@ export function parseCdnaLockedConfig(text: string): CdnaLockedConfigImport {
     throw new Error("Locked config is not valid JSON.");
   }
   const root = record(raw, "Locked config");
-  if (root.schemaVersion !== "cdna-display-config/v1") {
+  const legacyV1 = root.schemaVersion === "cdna-display-config/v1";
+  if (!legacyV1 && root.schemaVersion !== "cdna-display-config/v2") {
     throw new Error("Unsupported locked config schema.");
   }
   if (root.calculationModel !== "rpm-pseudocount-v1") {
@@ -219,20 +223,22 @@ export function parseCdnaLockedConfig(text: string): CdnaLockedConfigImport {
     const cdsEnd = integer(round.cdsEnd, `rounds[${index}].cdsEnd`);
     const cdsError = validateCdsPair(cdsStart, cdsEnd);
     if (cdsError) throw new Error(`Round ${index}: ${cdsError}`);
-    let expectedFileName: string | null = null;
-    if (round.expectedFileName != null) {
-      expectedFileName = fastqFilename(
-        round.expectedFileName,
-        `rounds[${index}].expectedFileName`,
-      );
+    const rawExpected = legacyV1
+      ? round.expectedFileName == null ? [] : [round.expectedFileName]
+      : round.expectedFileNames;
+    if (!Array.isArray(rawExpected) || rawExpected.length > LIMITS.FASTQ_FILES_MAX) {
+      throw new Error(`Round ${index} expectedFileNames is invalid.`);
     }
-    if (pipelineMode === "per-round" && expectedFileName == null) {
-      throw new Error(`Round ${index} is missing its expected FASTQ filename.`);
+    const expectedFileNames = rawExpected.map((filename, fileIndex) =>
+      fastqFilename(filename, `rounds[${index}].expectedFileNames[${fileIndex}]`)
+    );
+    if (pipelineMode === "per-round" && expectedFileNames.length === 0) {
+      throw new Error(`Round ${index} is missing its expected FASTQ filename(s).`);
     }
-    if (pipelineMode === "multiplexed" && expectedFileName != null) {
-      throw new Error(`Round ${index} cannot contain a per-round FASTQ filename.`);
+    if (pipelineMode === "multiplexed" && expectedFileNames.length !== 0) {
+      throw new Error(`Round ${index} cannot contain per-round FASTQ filenames.`);
     }
-    return { name, fwPrimer, rvPrimer, cdsStart, cdsEnd, expectedFileName };
+    return { name, fwPrimer, rvPrimer, cdsStart, cdsEnd, expectedFileNames };
   });
   if (new Set(rounds.map((round) => round.name)).size !== rounds.length) {
     throw new Error("Round names must be unique.");
@@ -330,8 +336,8 @@ function booleanValue(value: unknown, label: string): boolean {
 
 function fastqFilename(value: unknown, label: string): string {
   const name = stringValue(value, label);
-  if (name.length > 255 || !/\.(fastq|fq)$/i.test(name)) {
-    throw new Error(`${label} must be a .fastq or .fq filename.`);
+  if (name.length > 255 || !/\.(fastq|fq)(?:\.gz)?$/i.test(name)) {
+    throw new Error(`${label} must be a .fastq, .fq, .fastq.gz, or .fq.gz filename.`);
   }
   // Browser File.name has no path component. Enforce the same property for
   // imported hints so a config can never smuggle in a local or remote path.

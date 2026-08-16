@@ -30,6 +30,84 @@ export interface TargetSiteCallSettings {
   minBaseQ: number;
 }
 
+export interface TargetedReadProjection {
+  readonly refToRead: Int32Array;
+  /** CIGAR state by reference base: 1=M, 2=X, 3=D, 0=not aligned. */
+  readonly opAtRef: Uint8Array;
+  /** Inserted base count immediately before this reference position. */
+  readonly insertionBefore: Uint32Array;
+  readonly firstAlignedRef: number;
+  readonly lastAlignedRef: number;
+}
+
+export interface TargetedProjectionWorkspace {
+  readonly refToRead: Int32Array;
+  readonly opAtRef: Uint8Array;
+  readonly insertionBefore: Uint32Array;
+}
+
+export function createTargetedProjectionWorkspace(referenceLength: number): TargetedProjectionWorkspace {
+  return {
+    refToRead: new Int32Array(referenceLength),
+    opAtRef: new Uint8Array(referenceLength),
+    insertionBefore: new Uint32Array(referenceLength + 1),
+  };
+}
+
+/** Build the reference→read projection once and reuse its fixed buffers for
+ * global QC consumers, local rescue, target calls and haplotypes. */
+export function buildTargetedReadProjection(
+  referenceLength: number,
+  readLength: number,
+  alignment: TargetedAlignment,
+  workspace: TargetedProjectionWorkspace = createTargetedProjectionWorkspace(referenceLength),
+): TargetedReadProjection {
+  if (workspace.refToRead.length !== referenceLength) {
+    throw new Error("Projection workspace length does not match the reference.");
+  }
+  workspace.refToRead.fill(-1);
+  workspace.opAtRef.fill(0);
+  workspace.insertionBefore.fill(0);
+  let refPos = 0;
+  let readPos = alignment.readStart;
+  let firstAlignedRef = referenceLength;
+  let lastAlignedRef = -1;
+  for (const op of alignment.cigar) {
+    if (op.code === "M" || op.code === "X") {
+      const code = op.code === "M" ? 1 : 2;
+      for (let k = 0; k < op.length; k++) {
+        if (refPos >= referenceLength || readPos >= readLength) {
+          throw new Error("Alignment CIGAR exceeds sequence bounds.");
+        }
+        workspace.refToRead[refPos] = readPos;
+        workspace.opAtRef[refPos] = code;
+        if (refPos < firstAlignedRef) firstAlignedRef = refPos;
+        lastAlignedRef = refPos;
+        refPos++;
+        readPos++;
+      }
+    } else if (op.code === "I") {
+      workspace.insertionBefore[refPos] += op.length;
+      readPos += op.length;
+    } else {
+      for (let k = 0; k < op.length; k++, refPos++) {
+        if (refPos >= referenceLength) throw new Error("Alignment CIGAR exceeds reference bounds.");
+        workspace.opAtRef[refPos] = 3;
+      }
+    }
+  }
+  if (refPos !== referenceLength) {
+    throw new Error(`CIGAR consumed ${refPos} reference bases; expected ${referenceLength}.`);
+  }
+  return {
+    refToRead: workspace.refToRead,
+    opAtRef: workspace.opAtRef,
+    insertionBefore: workspace.insertionBefore,
+    firstAlignedRef,
+    lastAlignedRef,
+  };
+}
+
 /** Call configured target intervals from a single full-reference alignment. */
 export function callTargetSites(
   reference: Uint8Array,
@@ -38,52 +116,24 @@ export function callTargetSites(
   alignment: TargetedAlignment,
   sites: ReadonlyArray<ResolvedTargetSite>,
   settings: TargetSiteCallSettings,
+  projection?: TargetedReadProjection,
 ): TargetSiteCall[] {
   if (reference.length === 0) throw new Error("Reference is empty.");
-  const refToRead = new Int32Array(reference.length);
-  refToRead.fill(-1);
-  const insertionAfter = new Set<number>();
-  let refPos = 0;
-  let readPos = alignment.readStart;
-  let firstAlignedRef = reference.length;
-  let lastAlignedRef = -1;
-
-  for (const op of alignment.cigar) {
-    if (op.code === "M" || op.code === "X") {
-      for (let k = 0; k < op.length; k++) {
-        if (refPos >= reference.length || readPos >= read.length) {
-          throw new Error("Alignment CIGAR exceeds sequence bounds.");
-        }
-        refToRead[refPos] = readPos;
-        if (refPos < firstAlignedRef) firstAlignedRef = refPos;
-        if (refPos > lastAlignedRef) lastAlignedRef = refPos;
-        refPos++;
-        readPos++;
-      }
-    } else if (op.code === "I") {
-      insertionAfter.add(refPos - 1);
-      readPos += op.length;
-    } else {
-      refPos += op.length;
-    }
-  }
-  if (refPos !== reference.length) {
-    throw new Error(`CIGAR consumed ${refPos} reference bases; expected ${reference.length}.`);
-  }
+  const mapped = projection ?? buildTargetedReadProjection(reference.length, read.length, alignment);
 
   return sites.map((site) => {
-    if (site.start0 < firstAlignedRef || site.end0 - 1 > lastAlignedRef) {
+    if (site.start0 < mapped.firstAlignedRef || site.end0 - 1 > mapped.lastAlignedRef) {
       return emptyCall(site, "not_covered");
     }
     for (let boundary = site.start0; boundary < site.end0 - 1; boundary++) {
-      if (insertionAfter.has(boundary)) return emptyCall(site, "target_insertion");
+      if (mapped.insertionBefore[boundary + 1]! > 0) return emptyCall(site, "target_insertion");
     }
 
     const positions: number[] = [];
     for (let p = site.start0; p < site.end0; p++) {
-      const mapped = refToRead[p]!;
-      if (mapped < 0) return emptyCall(site, "target_deletion");
-      positions.push(mapped);
+      const readPosition = mapped.refToRead[p]!;
+      if (readPosition < 0) return emptyCall(site, "target_deletion");
+      positions.push(readPosition);
     }
     if (positions.some((p) => p >= qual.length || p >= read.length)) {
       return emptyCall(site, "not_covered");

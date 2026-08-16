@@ -1,0 +1,22 @@
+{
+  "name": "@cdna/targeted-wasm",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Isolated Rust/WASM full-reference aligner for targeted Nanopore",
+  "main": "./pkg/cdna_core_wasm.js",
+  "types": "./pkg/cdna_core_wasm.d.ts",
+  "exports": {
+    ".": {
+      "types": "./pkg/cdna_core_wasm.d.ts",
+      "browser": "./pkg-web/cdna_core_wasm.js",
+      "import": "./pkg/cdna_core_wasm.js",
+      "require": "./pkg/cdna_core_wasm.js",
+      "default": "./pkg/cdna_core_wasm.js"
+    }
+  },
+  "files": ["pkg", "pkg-web"],
+  "scripts": {
+    "build": "node ../core-wasm/build-if-needed.cjs",
+    "build:wasm": "cd ../core-wasm && mamba run -n cdna-web wasm-pack build --target nodejs --release --out-dir ../targeted-wasm/pkg --no-default-features --features targeted && mamba run -n cdna-web wasm-pack build --target bundler --release --out-dir ../targeted-wasm/pkg-web --no-default-features --features targeted"
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "name": "cdna-core-wasm",
+  "version": "0.0.0",
+  "files": [
+    "cdna_core_wasm_bg.wasm",
+    "cdna_core_wasm.js",
+    "cdna_core_wasm.d.ts"
+  ],
+  "main": "cdna_core_wasm.js",
+  "types": "cdna_core_wasm.d.ts"
+}

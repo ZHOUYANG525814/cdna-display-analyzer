@@ -18,6 +18,7 @@ import type {
   TargetedFileStats,
   TargetedPipelineSettings,
 } from "@cdna/core";
+import type { RunProvenance } from "./provenance";
 
 export interface DriveFileRef {
   id: string;
@@ -34,6 +35,9 @@ export interface PipelineJob {
   settings: DemultiplexSettings;
   pseudocount: number;
   useWasm: boolean;
+  /** Reference used for Preview/configuration provenance. Demultiplexing uses
+   * the locked primer/CDS coordinates directly. */
+  reference?: string;
   /** Pipeline mode. "multiplexed" preserves the historical demultiplex-by-
    *  barcode behaviour. "per-round" requires `sourceRoundIndices` and tells
    *  the worker to score each file's reads only against its bound round. */
@@ -165,6 +169,9 @@ export interface TargetedNanoporeJob {
   reference: string;
   sites: Array<{ name: string; ntStart: number; length: 3 }>;
   settings: TargetedPipelineSettings;
+  /** Development gate only; production UI omits this until parity/speed/RSS
+   * acceptance is recorded for the frozen candidate. */
+  useWasmAlignment?: boolean;
 }
 
 export interface TargetedNanoporeOutcome {
@@ -190,4 +197,5 @@ export interface TargetedNanoporeOutcome {
   wtBySite: Record<string, string>;
   libraryMedianFitness: Record<string, number>;
   hitCounts: Array<{ label: string; q05: number; q01: number; total: number }>;
+  provenance?: RunProvenance;
 }

@@ -10,10 +10,10 @@ import {
 } from "@/state/useTargetedNanoporeStore";
 import { DriveAuthProvider } from "@/adapters/DriveAuthProvider";
 import {
-  runTargetedNanoporeInWorker,
-  setWorkerErrorHandler,
-  terminateWorker,
-} from "@/worker/workerClient";
+  runInTargetedNanoporeWorker,
+  setTargetedWorkerErrorHandler,
+  terminateTargetedNanoporeWorker,
+} from "@/worker/targetedNanoporeWorkerClient";
 import { aminoAcidTargetLabel } from "../targetNaming";
 import {
   findDuplicateFastqGroups,
@@ -63,7 +63,7 @@ export function RunStep() {
   }, [s.rounds]);
 
   useEffect(() => {
-    setWorkerErrorHandler((msg) =>
+    setTargetedWorkerErrorHandler((msg) =>
       useTargetedNanoporeStore.getState().appendRunLog({ tag: "error", msg }),
     );
   }, []);
@@ -105,7 +105,7 @@ export function RunStep() {
           }
         }
       }
-      const duplicateGroups = await findDuplicateFastqGroups(
+      const duplicateCheck = await findDuplicateFastqGroups(
         current.rounds.flatMap((round) =>
           round.files.flatMap((source) =>
             source.file
@@ -127,12 +127,22 @@ export function RunStep() {
           ),
         ),
       );
-      if (duplicateGroups.length > 0) {
+      if (duplicateCheck.exactGroups.length > 0) {
         throw new Error(
-          "Duplicate FASTQ content detected: " +
-          duplicateGroups.map((labels) => labels.join(" ↔ ")).join("; ") +
+          "The same FASTQ source was bound more than once: " +
+          duplicateCheck.exactGroups.map((labels) => labels.join(" ↔ ")).join("; ") +
           ". Remove duplicate inputs before running.",
         );
+      }
+      if (duplicateCheck.probableGroups.length > 0) {
+        const details = duplicateCheck.probableGroups.map((labels) => labels.join(" ↔ ")).join("; ");
+        if (!window.confirm(
+          "Possible duplicate FASTQ inputs were found using file size plus sampled head/tail SHA-256 " +
+            `(not a complete content hash): ${details}. Continue anyway?`,
+        )) {
+          throw new Error("Run cancelled: possible duplicate FASTQ inputs were not confirmed.");
+        }
+        current.appendRunLog({ tag: "warning", msg: `Possible duplicates confirmed by user: ${details}` });
       }
 
       let driveToken: string | undefined;
@@ -141,7 +151,7 @@ export function RunStep() {
         driveToken = await new DriveAuthProvider({ clientId: CLIENT_ID }).getToken();
       }
 
-      const outcome = await runTargetedNanoporeInWorker(
+      const outcome = await runInTargetedNanoporeWorker(
         {
           localFiles,
           driveFiles,
@@ -163,6 +173,9 @@ export function RunStep() {
             reportHaplotypes:
               current.reportHaplotypes && current.sites.length >= 2,
           },
+          // Enabled after exact 53,066-read MTG output hashes matched TS and
+          // three development profiles exceeded the 1.5x/RSS gates.
+          useWasmAlignment: true,
         },
         (progress) =>
           useTargetedNanoporeStore.getState().updateRunProgress(progress),
@@ -170,6 +183,9 @@ export function RunStep() {
           useTargetedNanoporeStore
             .getState()
             .appendRunLog({ tag: event.tag, msg: event.text }),
+        driveFiles.length
+          ? () => new DriveAuthProvider({ clientId: CLIENT_ID! }).getToken()
+          : undefined,
       );
 
       const latest = useTargetedNanoporeStore.getState();
@@ -210,7 +226,7 @@ export function RunStep() {
   }, [uiSources.length]);
 
   const cancel = useCallback(() => {
-    terminateWorker();
+    terminateTargetedNanoporeWorker();
     const current = useTargetedNanoporeStore.getState();
     current.setRunState({ status: "cancelled", finishedAt: Date.now() });
     current.appendRunLog({

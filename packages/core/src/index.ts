@@ -1,6 +1,10 @@
 export const CORE_VERSION = "0.0.0";
 
 export {
+  TargetedReadIdSet,
+} from "./targeted-read-ids.js";
+
+export {
   CODON_TABLE,
   ASCII,
   reverseComplement,
@@ -39,8 +43,10 @@ export {
 
 export {
   runAnalyzer,
+  runAnalyzerCompact,
   buildColumnSpecs,
   serializeCsv,
+  serializeCsvChunked,
   type AnalyzerInput,
   type AnalyzerOutput,
   type AnalyzerRow,
@@ -149,6 +155,11 @@ export {
 } from "./targeted-align.js";
 
 export {
+  createWasmTargetedAligner,
+  type WasmTargetedAlignerLike,
+} from "./targeted-wasm.js";
+
+export {
   projectTargetedEvents,
   type TargetedSubstitution,
   type TargetedInsertion,
@@ -158,6 +169,8 @@ export {
 
 export {
   callTargetSites,
+  buildTargetedReadProjection,
+  createTargetedProjectionWorkspace,
   buildTargetHaplotype,
   buildProtectedMask,
   type TargetSiteCallStatus,

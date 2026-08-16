@@ -17,6 +17,7 @@ export function validateNanoporeFileName(name: string, sizeBytes: number | null)
   // eslint-disable-next-line no-control-regex
   if (/[\x00-\x1f<>:"/\\|?*]/.test(name)) return { ok: false, reason: "Filename contains unsafe characters." };
   if (!SUPPORTED_NANOPORE_FASTQ.test(name)) return { ok: false, reason: "Supported: .fastq, .fq, .fastqsanger, and their .gz forms." };
+  if (/\.gz$/i.test(name) && typeof DecompressionStream === "undefined") return { ok: false, reason: "This browser cannot stream gzip FASTQ files; use an uncompressed file or a current browser." };
   if (sizeBytes === 0) return { ok: false, reason: "File is empty." };
   if (sizeBytes != null && (!Number.isSafeInteger(sizeBytes) || sizeBytes < 0)) return { ok: false, reason: "File size metadata is invalid." };
   return { ok: true };

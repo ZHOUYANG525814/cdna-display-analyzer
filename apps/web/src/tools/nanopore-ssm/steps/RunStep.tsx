@@ -139,7 +139,7 @@ export function RunStep() {
     }
 
     try {
-      const duplicateGroups = await findDuplicateFastqGroups(
+      const duplicateCheck = await findDuplicateFastqGroups(
         pipelineMode === "per-round"
           ? rounds.flatMap((round) =>
               round.file ? [{ file: round.file, label: `${round.name} ← ${round.file.name}` }] : [],
@@ -151,12 +151,23 @@ export function RunStep() {
             )
           : driveFiles.map((file) => ({ file, label: file.name })),
       );
-      if (duplicateGroups.length > 0) {
+      if (duplicateCheck.exactGroups.length > 0) {
         throw new Error(
-          "Duplicate FASTQ content detected: " +
-          duplicateGroups.map((labels) => labels.join(" ↔ ")).join("; ") +
+          "The same FASTQ source was bound more than once: " +
+          duplicateCheck.exactGroups.map((labels) => labels.join(" ↔ ")).join("; ") +
           ". Remove duplicate inputs before running.",
         );
+      }
+      if (duplicateCheck.probableGroups.length > 0) {
+        const details = duplicateCheck.probableGroups
+          .map((labels) => labels.join(" ↔ "))
+          .join("; ");
+        if (!window.confirm(
+          "Possible duplicate FASTQ inputs were found using file size plus sampled head/tail SHA-256 " +
+            `(not a complete content hash): ${details}. Continue anyway?`,
+        )) {
+          throw new Error("Run cancelled: possible duplicate FASTQ inputs were not confirmed.");
+        }
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);

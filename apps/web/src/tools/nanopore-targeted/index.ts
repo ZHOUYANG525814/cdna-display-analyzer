@@ -5,6 +5,10 @@ import { InputsStep } from "./steps/InputsStep";
 import { QcStep } from "./steps/QcStep";
 import { RunStep } from "./steps/RunStep";
 import { ResultsStep } from "./steps/ResultsStep";
+import { initializeTargetedNanoporeWorker, terminateTargetedNanoporeWorker } from "@/worker/targetedNanoporeWorkerClient";
+import { registerWorkerInitializer } from "@/lib/telemetry";
+
+registerWorkerInitializer("nanopore-targeted", initializeTargetedNanoporeWorker);
 
 export const nanoporeTool: Tool = {
   id: "nanopore-targeted",
@@ -20,4 +24,12 @@ export const nanoporeTool: Tool = {
   ],
   useCurrentStep: () => useTargetedNanoporeStore((s) => s.currentStep),
   useSetStep: () => useTargetedNanoporeStore((s) => s.setStep as (id: string) => void),
+  dispose: () => {
+    terminateTargetedNanoporeWorker();
+    const store = useTargetedNanoporeStore.getState();
+    if (store.runState.status === "running") {
+      store.setRunState({ status: "cancelled", finishedAt: Date.now() });
+      store.appendRunLog({ tag: "warning", msg: "Cancelled because the tool was closed." });
+    }
+  },
 };

@@ -22,7 +22,7 @@ import {
   meanPhred,
   readFastqRecordsResilient,
 } from "./fastq.js";
-import { runAnalyzer, type AnalyzerOutput } from "./analyzer.js";
+import { runAnalyzer, runAnalyzerCompact, type AnalyzerOutput } from "./analyzer.js";
 import { createWasmScorer } from "./wasm.js";
 
 export interface PipelineRequest {
@@ -46,6 +46,11 @@ export interface PipelineRequest {
    *  score that source's reads against the bound round (no cross-round
    *  competition). Omit for the historical multiplexed/barcoded behaviour. */
   sourceRoundIndices?: ReadonlyArray<number>;
+  /** Preflight/diagnostic cap per source. Production analysis omits it. */
+  maxReadsPerSource?: number;
+  /** Use dense column arrays and omit per-variant row objects. Browser
+   * production workers enable this; small/reference callers keep rows. */
+  compactAnalyzer?: boolean;
 }
 
 export interface PipelineProgress {
@@ -165,7 +170,19 @@ export async function runPipeline(req: PipelineRequest): Promise<PipelineResult>
 
     let bytesProcessed = 0;
     let recordsProcessed = 0;
-    let lastReportedBytes = 0;
+    let lastProgressAt = 0;
+    const emitProgress = (force = false): void => {
+      if (!req.onProgress) return;
+      const now = performance.now();
+      if (!force && now - lastProgressAt < 200) return;
+      lastProgressAt = now;
+      req.onProgress({
+        sourceIndex: srcIdx,
+        bytesProcessed,
+        totalBytes: desc.sizeBytes,
+        recordsProcessed,
+      });
+    };
     const tSrc0 = performance.now();
     const unassignedAtSourceStart = engine.globalUnassigned;
     const malformedAtSourceStart =
@@ -190,27 +207,14 @@ export async function runPipeline(req: PipelineRequest): Promise<PipelineResult>
 
     // Fire one progress at the start of each source so the UI shows the
     // active file name immediately even before any chunks arrive.
-    req.onProgress?.({
-      sourceIndex: srcIdx,
-      bytesProcessed: 0,
-      totalBytes: desc.sizeBytes,
-      recordsProcessed: 0,
-    });
+    emitProgress(true);
 
     // Per-chunk progress: fire whenever we've intaken >1MB since last report.
     // This makes the bar move on small files where we never reach the
     // per-record threshold, and on very fast streams (e.g. local SSD).
     const bytesIter = streamToAsyncIter(stream, req.signal, (n) => {
       bytesProcessed += n;
-      if (req.onProgress && bytesProcessed - lastReportedBytes >= 1024 * 1024) {
-        lastReportedBytes = bytesProcessed;
-        req.onProgress({
-          sourceIndex: srcIdx,
-          bytesProcessed,
-          totalBytes: desc.sizeBytes,
-          recordsProcessed,
-        });
-      }
+      emitProgress();
     });
 
     // Per-round binding (when provided) skips cross-round competition. We
@@ -222,6 +226,7 @@ export async function runPipeline(req: PipelineRequest): Promise<PipelineResult>
 
     try {
       for await (const rec of readFastqRecordsResilient(bytesIter)) {
+        if (req.maxReadsPerSource != null && recordsProcessed >= req.maxReadsPerSource) break;
         if (req.signal?.aborted) throw req.signal.reason ?? new Error("aborted");
 
         if (!isValidFastqRecord(rec)) {
@@ -271,13 +276,7 @@ export async function runPipeline(req: PipelineRequest): Promise<PipelineResult>
         // byte report above, this gives smooth UI updates whether the
         // bottleneck is I/O (Drive stream) or CPU (local file).
         if (req.onProgress && (recordsProcessed & 0xfff) === 0) {
-          lastReportedBytes = bytesProcessed;
-          req.onProgress({
-            sourceIndex: srcIdx,
-            bytesProcessed,
-            totalBytes: desc.sizeBytes,
-            recordsProcessed,
-          });
+          emitProgress();
         }
         // Filter-funnel cadence (Phase 6.13): every ~LOG_EVERY records, dump
         // a running breakdown so users see counters move during long runs.
@@ -308,12 +307,7 @@ export async function runPipeline(req: PipelineRequest): Promise<PipelineResult>
         }
       }
     } finally {
-      req.onProgress?.({
-        sourceIndex: srcIdx,
-        bytesProcessed,
-        totalBytes: desc.sizeBytes,
-        recordsProcessed,
-      });
+      emitProgress(true);
     }
     // Per-source completion summary (Phase 6.13). Use the *running* engine
     // totals: in per-round mode this corresponds to a single round's data;
@@ -353,11 +347,12 @@ export async function runPipeline(req: PipelineRequest): Promise<PipelineResult>
   const tAnalyzer0 = performance.now();
   log("Demultiplex complete; running analyzer (DNA→AA, RPM, enrichment, Z, p, FDR)…");
   const roundNames = req.rounds.map((r) => r.name);
-  const analyzer = runAnalyzer({
+  const analyzer = (req.compactAnalyzer ? runAnalyzerCompact : runAnalyzer)({
     roundNames,
     dnaCounters: engine.dnaCounters,
     stats: engine.stats,
     pseudocount: req.pseudocount,
+    csvChunkChars: 4 * 1024 * 1024,
   });
   const dtAnalyzer = ((performance.now() - tAnalyzer0) / 1000).toFixed(1);
 
@@ -381,21 +376,15 @@ export async function runPipeline(req: PipelineRequest): Promise<PipelineResult>
       const qCol = `FDR_q_${lastRound}_vs_${firstRound}`;
       let q05 = 0;
       let q01 = 0;
-      for (const row of analyzer.rows) {
-        const q = row[qCol] as number;
-        if (Number.isFinite(q)) {
-          if (q < 0.05) q05++;
-          if (q < 0.01) q01++;
-        }
-      }
+      ({ q05, q01 } = analyzer.fdrHitCounts[qCol] ?? { q05: 0, q01: 0 });
       log(
         `${lastRound} vs ${firstRound}: ${q05.toLocaleString()} variants with FDR < 0.05` +
           ` (${q01.toLocaleString()} with FDR < 0.01)` +
-          ` out of ${analyzer.rows.length.toLocaleString()} unique peptides`,
+          ` out of ${analyzer.rowCount.toLocaleString()} unique peptides`,
         q05 > 0 ? "success" : "info",
       );
     }
-    log(`Analyzer: ${dtAnalyzer}s · ${analyzer.rows.length.toLocaleString()} unique peptides`);
+    log(`Analyzer: ${dtAnalyzer}s · ${analyzer.rowCount.toLocaleString()} unique peptides`);
   } else {
     log("Analyzer: no peptides emitted (empty counters).", "warning");
   }

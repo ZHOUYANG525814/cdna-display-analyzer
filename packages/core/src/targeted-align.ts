@@ -89,12 +89,14 @@ export function createTargetedReferenceSeedIndex(
 export function estimateReferenceOffsetIndexed(
   index: TargetedReferenceSeedIndex,
   read: Uint8Array,
+  workspace?: number[],
 ): TargetedDiagonalEstimate {
   const { k, referenceLength } = index;
   if (k < 3 || k > 15 || referenceLength < k || read.length < k) {
     return { offset: Math.max(0, Math.floor((read.length - referenceLength) / 2)), hits: 0 };
   }
-  const offsets: number[] = [];
+  const offsets = workspace ?? [];
+  offsets.length = 0;
   for (let j = 0; j + k <= read.length; j++) {
     const key = encodeKmer(read, j, k);
     if (key < 0) continue;
@@ -104,8 +106,37 @@ export function estimateReferenceOffsetIndexed(
   if (offsets.length === 0) {
     return { offset: Math.max(0, Math.floor((read.length - referenceLength) / 2)), hits: 0 };
   }
-  offsets.sort((a, b) => a - b);
-  return { offset: offsets[Math.floor(offsets.length / 2)]!, hits: offsets.length };
+  const medianIndex = Math.floor(offsets.length / 2);
+  const offset = selectKth(offsets, medianIndex);
+  return { offset, hits: offsets.length };
+}
+
+/** In-place deterministic quickselect. The returned upper median is exactly
+ * the value produced by the former full numeric sort, without O(n log n)
+ * sorting or a fresh offsets array for every strand of every read. */
+function selectKth(values: number[], kth: number): number {
+  let left = 0;
+  let right = values.length - 1;
+  while (left < right) {
+    const pivot = values[left + ((right - left) >> 1)]!;
+    let i = left;
+    let j = right;
+    while (i <= j) {
+      while (values[i]! < pivot) i++;
+      while (values[j]! > pivot) j--;
+      if (i <= j) {
+        const tmp = values[i]!;
+        values[i] = values[j]!;
+        values[j] = tmp;
+        i++;
+        j--;
+      }
+    }
+    if (kth <= j) right = j;
+    else if (kth >= i) left = i;
+    else break;
+  }
+  return values[kth]!;
 }
 
 /** Estimate readPos-referencePos from exact k-mers unique in the reference. */

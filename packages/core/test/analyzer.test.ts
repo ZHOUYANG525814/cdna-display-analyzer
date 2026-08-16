@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { runAnalyzer as runAnalyzerCore, type AnalyzerInput, serializeCsv } from "../src/analyzer.js";
+import {
+  runAnalyzer as runAnalyzerCore,
+  runAnalyzerCompact,
+  type AnalyzerInput,
+  serializeCsv,
+} from "../src/analyzer.js";
 import type { RoundStats } from "../src/demultiplex.js";
 
 function mkStats(passedQc: number): RoundStats {
@@ -44,6 +49,18 @@ describe("runAnalyzer", () => {
     // ATGGCC has count 10 > ATGGCG count 5 → ATGGCC dominant.
     expect(out.rows[0]!.Dominant_DNA_Seq).toBe("ATGGCC");
     expect(out.rows[0]!.Count_R0).toBe(15);
+  });
+
+  it("uses lexical dominant-DNA tie-break independent of shard insertion order", () => {
+    const run = (entries: Array<[string, number]>) => runAnalyzer({
+      roundNames: ["R0"],
+      dnaCounters: new Map([["R0", new Map(entries)]]),
+      stats: new Map([["R0", mkStats(20)]]),
+    })!;
+    const forward = run([["ATGGCG", 10], ["ATGGCC", 10]]);
+    const reversed = run([["ATGGCC", 10], ["ATGGCG", 10]]);
+    expect(forward.rows[0]!.Dominant_DNA_Seq).toBe("ATGGCC");
+    expect(reversed.csvParts.join("")).toBe(forward.csvParts.join(""));
   });
 
   it("computes RPM as count / passed_qc × 1e6", () => {
@@ -326,5 +343,30 @@ describe("runAnalyzer — Phase 6.12 + 6.16 column set", () => {
     const neutral = out.rows.find((r) => r.Peptide_Seq && r.Peptide_Seq !== "MK")!;
     const qNeutral = neutral["FDR_q_R1_vs_R0"] as number;
     expect(qNeutral).toBeGreaterThan(0.5);
+  });
+
+  it("production compact mode emits byte-identical CSV without dynamic rows", () => {
+    const input: AnalyzerInput = {
+      roundNames: ["R0", "R1", "R2"],
+      dnaCounters: new Map([
+        ["R0", new Map([["ATGGCC", 10], ["ATGGCG", 10], ["ATGAAA", 2]])],
+        ["R1", new Map([["ATGGCC", 4], ["ATGGCG", 16], ["ATGAAA", 20]])],
+        ["R2", new Map([["ATGGCC", 2], ["ATGGCG", 18], ["ATGAAA", 40]])],
+      ]),
+      stats: new Map([
+        ["R0", mkStats(100)],
+        ["R1", mkStats(120)],
+        ["R2", mkStats(140)],
+      ]),
+      pseudocount: 0.5,
+      csvChunkChars: 64,
+    };
+    const reference = runAnalyzerCore(input)!;
+    const compact = runAnalyzerCompact(input)!;
+    expect(compact.rows).toEqual([]);
+    expect(compact.rowCount).toBe(reference.rows.length);
+    expect(compact.libraryMedianEnrich).toEqual(reference.libraryMedianEnrich);
+    expect(compact.fdrHitCounts).toEqual(reference.fdrHitCounts);
+    expect(compact.csvParts.join("")).toBe(reference.csvParts.join(""));
   });
 });

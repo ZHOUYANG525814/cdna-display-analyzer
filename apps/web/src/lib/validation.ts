@@ -155,11 +155,18 @@ export function validateFastqFileName(
       };
     }
   }
-  if (!/\.(fastq|fq)$/i.test(name)) {
+  if (!/\.(fastq|fq)(?:\.gz)?$/i.test(name)) {
     return {
       ok: false,
       level: "error",
-      reason: "Filename must end in .fastq or .fq (gzip not yet supported).",
+      reason: "Filename must end in .fastq, .fq, .fastq.gz, or .fq.gz.",
+    };
+  }
+  if (/\.gz$/i.test(name) && typeof DecompressionStream === "undefined") {
+    return {
+      ok: false,
+      level: "error",
+      reason: "This browser cannot stream gzip FASTQ files; use an uncompressed file or a current browser.",
     };
   }
   if (sizeBytes === 0) {
@@ -200,8 +207,28 @@ export function validateFastqFileSync(file: File): FileCheck {
 /** Validate the first complete record without buffering the full FASTQ. */
 export async function peekFastq(file: File): Promise<FileCheck> {
   try {
-    // 256 KiB covers one 50 kb sequence plus its quality line and metadata.
-    const head = await file.slice(0, 256 * 1024).text();
+    let stream: ReadableStream<Uint8Array> = file.stream();
+    if (/\.gz$/i.test(file.name)) {
+      if (typeof DecompressionStream === "undefined") {
+        return { ok: false, level: "error", reason: "This browser cannot stream gzip files." };
+      }
+      stream = stream.pipeThrough(
+        new DecompressionStream("gzip") as unknown as ReadableWritablePair<Uint8Array, Uint8Array>,
+      );
+    }
+    const reader = stream.getReader();
+    const decoder = new TextDecoder("utf-8", { fatal: true });
+    let head = "";
+    try {
+      while (head.length < 256 * 1024) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (value) head += decoder.decode(value, { stream: true });
+        if ((head.match(/\n/g)?.length ?? 0) >= 4) break;
+      }
+    } finally {
+      await reader.cancel().catch(() => undefined);
+    }
     const lines = head.split(/\r?\n/);
     if (lines.length < 4) {
       return {

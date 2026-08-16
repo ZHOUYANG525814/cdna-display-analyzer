@@ -11,6 +11,10 @@ import { ConfigureStep } from "./steps/ConfigureStep";
 import { PreviewStep } from "./steps/PreviewStep";
 import { RunStep } from "./steps/RunStep";
 import { ResultsStep } from "./steps/ResultsStep";
+import { initializeCdnaWorker, terminateCdnaWorker } from "@/worker/cdnaWorkerClient";
+import { registerWorkerInitializer } from "@/lib/telemetry";
+
+registerWorkerInitializer("cdna-display", initializeCdnaWorker);
 
 export const cdnaDisplayTool: Tool = {
   id: "cdna-display",
@@ -28,4 +32,11 @@ export const cdnaDisplayTool: Tool = {
   ],
   useCurrentStep: () => useRunStore((s) => s.currentStep),
   useSetStep: () => useRunStore((s) => s.setStep),
+  dispose: () => {
+    terminateCdnaWorker();
+    if (useRunStore.getState().status === "running") {
+      useRunStore.getState().cancelRun();
+      useRunStore.getState().appendLog({ text: "Cancelled because the tool was closed.", tag: "warning" });
+    }
+  },
 };

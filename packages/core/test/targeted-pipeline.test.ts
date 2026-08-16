@@ -24,6 +24,27 @@ function mutate(codon: string): string { return REF.slice(0, TARGET - 1) + codon
 function rc(seq: string): string { return [...seq].reverse().map((x) => ({ A: "T", C: "G", G: "C", T: "A" }[x]!)).join(""); }
 
 describe("runTargetedNanoporePipeline", () => {
+  it("produces identical aggregate outputs through TS and candidate WASM alignment", async () => {
+    const buildRequest = (useWasmAlignment: boolean) => ({
+      sources: [
+        new MemoryFastq("r0", record("wt0", REF) + record("mut0", mutate("TGG"))),
+        new MemoryFastq("r1", record("wt1", REF) + record("mut1", rc(mutate("TGG")))),
+      ],
+      sourceRoundIndices: [0, 1],
+      roundNames: ["Round 0", "Round 1"],
+      reference: REF,
+      sites: [{ name: "site_01", ntStart: TARGET, length: 3 as const }],
+      settings: { minReadQ: 10, minReferenceCoverage: 0.9, minAlignmentIdentity: 0.85, minProtectedIdentity: 0.95, maxProtectedIndelBases: 30, minTargetBaseQ: 15, minInputCountToScore: 1, pseudocount: 0.5, reportHaplotypes: false },
+      useWasmAlignment,
+    });
+    const ts = await runTargetedNanoporePipeline(buildRequest(false));
+    const wasm = await runTargetedNanoporePipeline(buildRequest(true));
+    expect(Object.fromEntries(wasm.stats)).toEqual(Object.fromEntries(ts.stats));
+    expect(wasm.fileStats).toEqual(ts.fileStats);
+    expect(wasm.analyzer).toEqual(ts.analyzer);
+    expect(wasm.exactCodonCsvParts).toEqual(ts.exactCodonCsvParts);
+  });
+
   it("merges shards, removes duplicate IDs, handles reverse reads, and enriches every AA state including reference", async () => {
     const r0a = Array.from({ length: 10 }, (_, i) => record(`w${i}`, REF)).join("") + record("mut0", mutate("TGG"));
     const r0b = record("w0", REF) + record("rev", rc(mutate("TGG")));

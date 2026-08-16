@@ -12,7 +12,7 @@ import { RankAbundance } from "@/tools/cdna-display/viz/RankAbundance";
 import { SequenceLogo } from "@/tools/cdna-display/viz/SequenceLogo";
 import { VolcanoPlot } from "@/tools/cdna-display/viz/VolcanoPlot";
 import type { StreamCsvResult } from "@/tools/cdna-display/viz/csvParse";
-import { parseCsvInWorker } from "@/worker/workerClient";
+import { parseCsvInCdnaWorker } from "@/worker/cdnaWorkerClient";
 import { CDNA_METHODS } from "@cdna/core";
 import { MethodsCard } from "@/components/MethodsCard";
 import { LazyMount } from "@/components/LazyMount";
@@ -57,7 +57,7 @@ export function ResultsStep() {
       // (top 100), so 5k is plenty. The Comlink structured-clone return
       // from the worker shrinks ~10× — eliminates the multi-second freeze
       // on result delivery for million-peptide libraries.
-      void parseCsvInWorker(outcome.csvBlob, {
+      void parseCsvInCdnaWorker(outcome.csvBlob, {
         matrixLimit: 5_000,
         topLimit: 20,
       })

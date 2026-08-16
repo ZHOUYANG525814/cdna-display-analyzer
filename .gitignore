@@ -26,3 +26,7 @@ packages/core-wasm/target
 packages/*/test/**/*.js
 packages/*/test/**/*.d.ts
 packages/*/test/**/*.map
+
+# Browser E2E traces and machine-readable reports are generated artifacts.
+apps/web/test-results/
+apps/web/playwright-report/
