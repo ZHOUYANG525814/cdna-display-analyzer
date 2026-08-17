@@ -250,6 +250,7 @@ export function RunStep() {
 
   return (
     <div className="mx-auto max-w-5xl space-y-6">
+      <div className="sticky top-14 z-40 -mx-1 bg-background/95 px-1 py-2 backdrop-blur supports-[backdrop-filter]:bg-background/85">
       <Card className="border-primary/40">
         <CardHeader className="flex flex-row items-center justify-between gap-4 space-y-0">
           <div>
@@ -276,7 +277,7 @@ export function RunStep() {
               onClick={() => void run()}
             >
               <Play className="mr-2 h-4 w-4" />
-              {status === "idle" ? "Run analysis" : "Run again"}
+              Run analysis
             </Button>
           )}
         </CardHeader>
@@ -285,6 +286,7 @@ export function RunStep() {
           {s.runState.error && <div role="alert" className="rounded border border-destructive/50 bg-destructive/5 p-3 text-sm text-destructive">{s.runState.error}</div>}
         </CardContent>
       </Card>
+      </div>
 
       <Card><CardHeader><CardTitle className="text-base">Inputs and design</CardTitle><CardDescription>Confirm every round binding before starting the full run.</CardDescription></CardHeader><CardContent className="space-y-3 text-sm">
         {s.rounds.map((round) => <div key={round.id} className="rounded border p-3"><strong>Round {round.round}</strong><div className="mt-1 space-y-1 text-xs text-muted-foreground">{round.files.map((source) => { const name = source.file?.name ?? source.driveRef?.name ?? source.expectedFileName ?? "Missing file"; const size = source.file?.size ?? source.driveRef?.sizeBytes; return <div key={source.id}>{name} · {isGzipFastq(name) ? "gzip" : "uncompressed"}{size != null ? ` · ${formatBytes(size)}` : ""}</div>; })}</div></div>)}

@@ -51,16 +51,16 @@ export function RunStep() {
   const uiSources = useMemo(() => {
     if (pipelineMode === "per-round") {
       const local = rounds.flatMap((round) => round.sources.flatMap((source) => source.file
-        ? [{ name: source.file.name, totalBytes: isGzipFastq(source.file.name) ? null : source.file.size as number | null }]
+        ? [{ name: source.file.name, totalBytes: isGzipFastq(source.file.name) ? null : source.file.size as number | null, sizeBytes: source.file.size, roundName: round.name }]
         : []));
       const drive = rounds.flatMap((round) => round.sources.flatMap((source) => source.driveRef
-        ? [{ name: source.driveRef.name, totalBytes: isGzipFastq(source.driveRef.name) ? null : source.driveRef.sizeBytes }]
+        ? [{ name: source.driveRef.name, totalBytes: isGzipFastq(source.driveRef.name) ? null : source.driveRef.sizeBytes, sizeBytes: source.driveRef.sizeBytes, roundName: round.name }]
         : []));
       return [...local, ...drive];
     }
     return [
-      ...localFiles.map((f) => ({ name: f.name, totalBytes: isGzipFastq(f.name) ? null : f.size as number | null })),
-      ...driveFiles.map((d) => ({ name: d.name, totalBytes: isGzipFastq(d.name) ? null : d.sizeBytes })),
+      ...localFiles.map((f) => ({ name: f.name, totalBytes: isGzipFastq(f.name) ? null : f.size as number | null, sizeBytes: f.size, roundName: null })),
+      ...driveFiles.map((d) => ({ name: d.name, totalBytes: isGzipFastq(d.name) ? null : d.sizeBytes, sizeBytes: d.sizeBytes, roundName: null })),
     ];
   }, [pipelineMode, rounds, localFiles, driveFiles]);
   const total = uiSources.length;
@@ -292,7 +292,8 @@ export function RunStep() {
 
   return (
     <div className="mx-auto max-w-5xl space-y-6">
-      <Card>
+      <div className="sticky top-14 z-40 -mx-1 bg-background/95 px-1 py-2 backdrop-blur supports-[backdrop-filter]:bg-background/85">
+      <Card className="border-primary/40 shadow-md">
         <CardHeader className="flex flex-row items-center justify-between space-y-0">
           <div>
             <CardTitle>Run pipeline</CardTitle>
@@ -306,7 +307,7 @@ export function RunStep() {
           </div>
           {status !== "running" && (
             <Button size="lg" onClick={start} disabled={analysisErrors.length > 0}>
-              <Play className="mr-1.5 h-4 w-4" /> {status === "idle" ? "Run analysis" : "Run again"}
+              <Play className="mr-1.5 h-4 w-4" /> Run analysis
             </Button>
           )}
           {status === "running" && (
@@ -318,8 +319,9 @@ export function RunStep() {
 
         <CardContent className="space-y-3">{analysisErrors.length > 0 && <div className="rounded border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive">{analysisErrors.map((error) => <div key={error}>• {error}</div>)}</div>}{errorMessage && <div role="alert" className="rounded border border-destructive/50 bg-destructive/5 p-3 text-sm text-destructive">{errorMessage}</div>}</CardContent>
       </Card>
+      </div>
 
-      <Card><CardHeader><CardTitle className="text-base">Inputs and design</CardTitle><CardDescription>Confirm the round/file binding and CDS definition before the full run.</CardDescription></CardHeader><CardContent className="space-y-3 text-sm"><div className="rounded bg-muted/40 p-3 text-xs">Mode: <strong>{pipelineMode}</strong> · {rounds.length} rounds · {total} files · reference {referenceSeq.length.toLocaleString()} bp</div>{rounds.map((round) => <div key={round.id} className="rounded border p-3"><strong>{round.name}</strong><div className="mt-1 text-xs text-muted-foreground">Fw {round.fwPrimer} · Rv {round.rvPrimer} · CDS {round.cdsStart ?? "?"}–{round.cdsEnd ?? "?"}</div>{pipelineMode === "per-round" && <div className="mt-1 text-xs text-muted-foreground">{round.sources.map((source) => source.file?.name ?? source.driveRef?.name ?? source.expectedFileName ?? "missing").join(", ")}</div>}</div>)}</CardContent></Card>
+      <Card><CardHeader><CardTitle className="text-base">Inputs and design</CardTitle><CardDescription>Confirm the round/file binding and CDS definition before the full run.</CardDescription></CardHeader><CardContent className="space-y-3 text-sm"><div className="rounded bg-muted/40 p-3 text-xs">Mode: <strong>{pipelineMode}</strong> · {rounds.length} rounds · {total} files · reference {referenceSeq.length.toLocaleString()} bp</div><div className="space-y-1 rounded border p-3">{uiSources.map((source, index) => <div key={`${source.name}:${index}`} className="flex flex-wrap justify-between gap-x-3 text-xs"><span className="min-w-0 font-mono">{source.roundName ? `${source.roundName} ← ` : ""}{source.name}</span><span className="text-muted-foreground">{isGzipFastq(source.name) ? "gzip" : "uncompressed"}{source.sizeBytes != null ? ` · ${formatBytes(source.sizeBytes)}` : " · size unknown"}</span></div>)}</div>{rounds.map((round) => <div key={round.id} className="rounded border p-3"><strong>{round.name}</strong><div className="mt-1 text-xs text-muted-foreground">Fw {round.fwPrimer} · Rv {round.rvPrimer} · CDS {round.cdsStart ?? "?"}–{round.cdsEnd ?? "?"}</div></div>)}</CardContent></Card>
 
       <NgSettings />
 
@@ -341,12 +343,34 @@ export function RunStep() {
 
 function NgSettings() {
   const s = useRunStore();
-  return <Card><CardHeader><CardTitle className="text-base">QC and statistics</CardTitle><CardDescription>Read Q ≥ {s.minMeanPhred}; CDS Q ≥ {s.minMeanPhredCds}; pseudocount {s.pseudocount} RPM; stop filtering {s.filterStop ? "on" : "off"}; engine {s.useWasm ? "WASM" : "TypeScript"}.</CardDescription></CardHeader><CardContent><details><summary className="cursor-pointer text-sm font-medium">Advanced settings</summary><div className="mt-4 grid gap-4 sm:grid-cols-2">
+  return <><Card><CardHeader><CardTitle className="text-base">QC and statistics</CardTitle><CardDescription>Read Q ≥ {s.minMeanPhred}; CDS Q ≥ {s.minMeanPhredCds}; pseudocount {s.pseudocount} RPM; stop filtering {s.filterStop ? "on" : "off"}; engine {s.useWasm ? "WASM" : "TypeScript"}.</CardDescription></CardHeader><CardContent><details><summary className="cursor-pointer text-sm font-medium">Advanced settings</summary><div className="mt-4 grid gap-4 sm:grid-cols-2">
     <label className="space-y-1 text-xs"><Label>Minimum mean read Q</Label><Input disabled={s.status === "running"} type="number" min={0} max={40} value={s.minMeanPhred} onChange={(event) => s.setMinMeanPhred(Number(event.target.value))} /></label>
     <label className="space-y-1 text-xs"><Label>Minimum mean CDS Q</Label><Input disabled={s.status === "running"} type="number" min={0} max={40} value={s.minMeanPhredCds} onChange={(event) => s.setMinMeanPhredCds(Number(event.target.value))} /></label>
     <label className="space-y-1 text-xs"><Label>Enrichment pseudocount (RPM)</Label><Input disabled={s.status === "running"} type="number" min={Number.MIN_VALUE} max={100} step={0.5} value={s.pseudocount} onChange={(event) => s.setPseudocount(Number(event.target.value))} /></label>
     <div className="space-y-3 text-sm"><label className="flex items-center gap-2"><input disabled={s.status === "running"} type="checkbox" checked={s.filterStop} onChange={(event) => s.setFilterStop(event.target.checked)} />Discard premature stop codons</label><label className="flex items-center gap-2"><input disabled={s.status === "running"} type="checkbox" checked={s.useWasm} onChange={(event) => s.setUseWasm(event.target.checked)} />Use WASM analysis engine</label></div>
-  </div></details></CardContent></Card>;
+  </div></details></CardContent></Card>
+  <Card><CardHeader><CardTitle className="text-base">System-managed structural safeguards</CardTitle><CardDescription>Fixed pipeline rules are shown for auditability. NGS uses anchor-based fixed-coordinate extraction, not full-reference gapped realignment.</CardDescription></CardHeader><CardContent className="space-y-3">
+    <div className="grid gap-2 text-xs sm:grid-cols-2">
+      <Fixed label="FASTQ handling" value="streamed; malformed records isolated" />
+      <Fixed label="Read orientation" value="forward, then reverse complement" />
+      <Fixed label="Forward anchor" value="exact primer 3′ terminal 10 nt" />
+      <Fixed label="Sequence normalization" value="uppercase A/C/G/T/N" />
+      <Fixed label="CDS model" value="fixed coordinates after the anchor" />
+      <Fixed label="CDS structure" value="in bounds; configured length divisible by 3" />
+      <Fixed label="Dominant DNA ties" value="lexicographically smallest sequence" />
+      <Fixed label="Multiple testing" value="BH-FDR per round comparison" />
+    </div>
+    <div className="rounded-md border bg-muted/30 p-3 text-xs text-muted-foreground">
+      {s.pipelineMode === "multiplexed"
+        ? "Multiplexed round assignment: barcode score ≤ 1.0 and best-vs-runner-up margin ≥ 1.0. Reads that cannot be assigned uniquely remain unassigned."
+        : "Per-round assignment: the file binding locks the biological round. The same exact anchor and barcode score ≤ 1.0 are checked, but reads are never reassigned to another round."}
+      {" "}Insertions or deletions are not repaired by this NGS path; use a reference and primer/CDS coordinates that match the amplicon design.
+    </div>
+  </CardContent></Card></>;
+}
+
+function Fixed({ label, value }: { label: string; value: string }) {
+  return <div className="flex justify-between gap-3 rounded bg-muted/40 px-3 py-2"><span className="text-muted-foreground">{label}</span><span className="text-right font-mono">{value}</span></div>;
 }
 
 function NavRow() {

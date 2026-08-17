@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Download, RefreshCw, ArrowLeft } from "lucide-react";
+import { Download, FilePlus2, RotateCcw } from "lucide-react";
 import { useRunStore } from "@/state/useRunStore";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -434,13 +434,16 @@ export function ResultsStep() {
         </Card>
       )}
 
-      <div className="order-7 flex justify-between">
-        <Button variant="ghost" onClick={state.goPrev}>
-          <ArrowLeft className="mr-1.5 h-4 w-4" /> Back
-        </Button>
-        <Button variant="outline" onClick={state.resetAll}>
-          <RefreshCw className="mr-1.5 h-4 w-4" /> New run
-        </Button>
+      <div className="order-7 space-y-2">
+        <div className="flex flex-wrap justify-end gap-2">
+          <Button variant="outline" onClick={state.prepareRerun}>
+            <RotateCcw className="mr-1.5 h-4 w-4" /> Run again
+          </Button>
+          <Button onClick={state.resetAll}>
+            <FilePlus2 className="mr-1.5 h-4 w-4" /> New run
+          </Button>
+        </div>
+        <p className="text-right text-xs text-muted-foreground">Run again keeps all files, design and settings and returns to Analyze. New run clears the project and restores defaults.</p>
       </div>
     </div>
   );

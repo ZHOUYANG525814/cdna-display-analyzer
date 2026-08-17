@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import type { ReactNode } from "react";
-import { AlertTriangle, ArrowLeft, BarChart3, ChevronDown, ChevronRight, Dna, Download, RefreshCw, Table2, TrendingUp } from "lucide-react";
+import { AlertTriangle, BarChart3, ChevronDown, ChevronRight, Dna, Download, FilePlus2, RotateCcw, Table2, TrendingUp } from "lucide-react";
 import { TARGETED_NANOPORE_METHODS } from "@cdna/core";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -53,7 +53,7 @@ export function ResultsStep() {
 
     <MethodsCard doc={TARGETED_NANOPORE_METHODS} pseudocount={s.settings.pseudocount} settings={methodSettings(snapshot)} libraryMedian={o.libraryMedianFitness} hitCounts={o.hitCounts} />
 
-    <div className="flex flex-wrap justify-between gap-2"><Button variant="outline" onClick={() => s.setStep("analyze")}><ArrowLeft className="mr-2 h-4 w-4" />Back to Analyze</Button><Button onClick={s.prepareNextRun}><RefreshCw className="mr-2 h-4 w-4" />New run</Button></div><p className="text-center text-xs text-muted-foreground">New run clears the project, targets, settings, sequencing-file hints and results, then restores the recommended defaults.</p>
+    <div className="space-y-2"><div className="flex flex-wrap justify-end gap-2"><Button variant="outline" onClick={s.prepareRerun}><RotateCcw className="mr-2 h-4 w-4" />Run again</Button><Button onClick={s.prepareNextRun}><FilePlus2 className="mr-2 h-4 w-4" />New run</Button></div><p className="text-right text-xs text-muted-foreground">Run again keeps all files, design and settings and returns to Analyze. New run clears the project and restores the recommended defaults.</p></div>
   </div>;
 }
 

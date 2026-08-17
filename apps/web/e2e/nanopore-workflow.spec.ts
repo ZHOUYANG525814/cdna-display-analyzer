@@ -12,4 +12,7 @@ test("runs the four-step targeted Nanopore enrichment workflow", async ({ page }
   await page.getByRole("button", { name: "Run analysis" }).click();
   await expect(page.getByText("Callable target observations")).toBeVisible({ timeout: 150_000 });
   await expect(page.getByRole("heading", { name: "Downloads" })).toBeVisible();
+  await page.getByRole("button", { name: "Run again" }).click();
+  await expect(page.getByRole("heading", { name: "Run targeted Nanopore pipeline" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Run analysis" })).toBeEnabled();
 });

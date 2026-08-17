@@ -162,6 +162,9 @@ interface RunState {
   appendLog: (entry: Omit<LogEntry, "at">) => void;
   loadLockedConfig: (config: CdnaLockedConfigImport) => void;
 
+  /** Keep every input/design/setting, discard the completed run, and return
+   * to Analyze so the user can adjust or rerun the same configuration. */
+  prepareRerun: () => void;
   resetAll: () => void;
 }
 
@@ -348,6 +351,8 @@ export const useRunStore = create<RunState>((set, get) => ({
       outcome: null,
       errorMessage: null,
     }),
+
+  prepareRerun: () => set({ currentStep: "analyze", ...invalidatedRun() }),
 
   resetAll: () =>
     set({

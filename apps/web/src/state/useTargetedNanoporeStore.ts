@@ -99,6 +99,9 @@ interface TargetedNanoporeState {
   updateRunProgress: (progress: PipelineProgressMsg) => void;
   appendRunLog: (entry: Omit<TargetedLogEntry, "ts">) => void;
   loadLockedConfig: (config: TargetedLockedConfigImport) => void;
+  /** Preserve inputs/design/settings, discard the completed result, and
+   * return to Analyze for an intentional rerun. */
+  prepareRerun: () => void;
   /** Return to a genuinely fresh initial wizard. */
   prepareNextRun: () => void;
 }
@@ -284,6 +287,11 @@ export const useTargetedNanoporeStore = create<TargetedNanoporeState>((set, get)
     })),
     settings: { ...config.settings },
     reportHaplotypes: config.reportHaplotypes,
+    qcLocked: false,
+    runState: emptyRunState(),
+  }),
+  prepareRerun: () => set({
+    currentStep: "analyze",
     qcLocked: false,
     runState: emptyRunState(),
   }),

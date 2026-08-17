@@ -30,6 +30,10 @@ test("runs a 10k-read gzip multi-shard cDNA job end to end", async ({ page }) =>
   await page.getByRole("button", { name: /^Run analysis$/ }).click();
   await expect(page.getByRole("heading", { name: "Downloads" })).toBeVisible({ timeout: 240_000 });
   await expect(page.getByText("10,000", { exact: true }).first()).toBeVisible();
+  await page.getByRole("button", { name: "Run again" }).click();
+  await expect(page.getByRole("heading", { name: "Run pipeline" })).toBeVisible();
+  await expect(page.getByText("shard-a.fastq.gz")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Run analysis" })).toBeEnabled();
 });
 
 test("can cancel a cDNA worker and run again with the same gzip shards", async ({ page }) => {
@@ -50,7 +54,7 @@ test("can cancel a cDNA worker and run again with the same gzip shards", async (
   await page.getByRole("button", { name: /^Run analysis$/ }).click();
   await page.getByRole("button", { name: "Cancel" }).click();
   await expect(page.getByText("Cancelled.")).toBeVisible();
-  await page.getByRole("button", { name: "Run again" }).click();
+  await page.getByRole("button", { name: "Run analysis" }).click();
   await expect(page.getByRole("heading", { name: "Downloads" })).toBeVisible({ timeout: 240_000 });
   await expect(page.getByText("10,000", { exact: true }).first()).toBeVisible();
 });
