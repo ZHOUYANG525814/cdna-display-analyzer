@@ -13,6 +13,7 @@ import {
   reverseInto,
   uppercaseInto,
   type DemultiplexSettings,
+  type ProcessResult,
   type RoundConfigInput,
   type RoundStats,
   type UnassignedBreakdown,
@@ -254,17 +255,19 @@ export async function runPipeline(req: PipelineRequest): Promise<PipelineResult>
             ? copyInto(rec.qual, upQualScratch)
             : rec.qual; // malformed FASTQ; engine will handle the mismatch
 
-          let reason =
+          const forwardReason =
             boundRoundIdx >= 0
               ? engine.processReadForRound(upSeq, upQual, boundRoundIdx)
               : engine.processRead(upSeq, upQual);
-          if (reason !== "assigned") {
+          let reason = forwardReason;
+          if (forwardReason !== "assigned") {
             const rcBytes = rcInto(upSeq, rcScratch);
             const rcQual = reverseInto(upQual, rcQualScratch);
-            reason =
+            const reverseReason =
               boundRoundIdx >= 0
                 ? engine.processReadForRound(rcBytes, rcQual, boundRoundIdx)
                 : engine.processRead(rcBytes, rcQual);
+            reason = mostInformativeProcessResult(forwardReason, reverseReason);
           }
           if (reason !== "assigned") {
             engine.recordUnassigned(reason);
@@ -420,6 +423,24 @@ export async function runPipeline(req: PipelineRequest): Promise<PipelineResult>
   } finally {
     wasmScorer?.free?.();
   }
+}
+
+// A strand retry must not erase evidence already found on the other strand.
+// For example, a valid forward anchor with a two-base barcode mismatch is a
+// barcode failure even when the reverse complement has no anchor at all.
+// `assigned` always wins; otherwise prefer the result carrying the most
+// specific demultiplexing evidence.
+function mostInformativeProcessResult(
+  left: ProcessResult,
+  right: ProcessResult,
+): ProcessResult {
+  const rank: Record<ProcessResult, number> = {
+    no_anchor: 0,
+    barcode_mismatch: 1,
+    ambiguous: 2,
+    assigned: 3,
+  };
+  return rank[right] > rank[left] ? right : left;
 }
 
 // Build the run_stats.json payload. Phase 6.12 bumps schema_version to 2:

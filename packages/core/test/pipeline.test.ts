@@ -145,6 +145,23 @@ describe("runPipeline (end-to-end on in-memory source)", () => {
     expect(result.dnaCounters.get("R0")!.get("ATGGCCAAA")).toBe(2);
   });
 
+  it("preserves a forward barcode failure when the reverse strand has no anchor", async () => {
+    const fq = mkFastq([
+      // The anchor is exact, but TTGGG differs from the expected GGGGG
+      // barcode at two positions. Its reverse complement has no anchor.
+      { id: "bad-barcode", seq: "TTGGG" + "AAAAACCCCC" + "ATGGCCAAA" + "TTTT" },
+    ]);
+    const result = await runPipeline({
+      sources: [makeSource("bad-barcode.fastq", fq)],
+      rounds: [ROUND],
+      settings: STRICT,
+      pseudocount: 0.5,
+    });
+    expect(result.globalUnassigned).toBe(1);
+    expect(result.unassignedBreakdown.barcode_mismatch).toBe(1);
+    expect(result.unassignedBreakdown.no_anchor).toBe(0);
+  });
+
   it.each([
     ["missing separator", "@bad\nACGT\nnot-plus\nIIII\n"],
     ["truncated record", "@bad\nACGT\n+\n"],
