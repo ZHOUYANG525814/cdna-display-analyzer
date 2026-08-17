@@ -96,6 +96,10 @@ test("browser Nanopore fault audit exports exact codons, indel QC, rescue and de
   await page.goto("/");
   await page.getByRole("button", { name: "Nanopore" }).click();
   await expect(page.getByRole("heading", { name: "Nanopore Analyzer" })).toBeVisible();
+  // The banner updates before the lazily loaded tool body. Waiting for this
+  // Nanopore-only control prevents uploading the config into the outgoing
+  // NGS input during the brief module transition.
+  await expect(page.getByRole("button", { name: "Load demo" })).toBeVisible();
   await importConfig(page, "FIXED_CONFIG/NANOPORE_SEPARATED_ROUNDS_FIXED_CONFIG.json");
   const inputs = page.locator('input[type="file"][multiple]');
   await expect(inputs).toHaveCount(3);
@@ -109,7 +113,7 @@ test("browser Nanopore fault audit exports exact codons, indel QC, rescue and de
   await page.getByRole("button", { name: "Continue to Analyze" }).click();
   await page.getByRole("button", { name: /^Run analysis$/ }).click();
   await expect(page.getByRole("heading", { name: "Downloads" })).toBeVisible({ timeout: 180_000 });
-  await expect(page.getByText("63", { exact: true }).first()).toBeVisible();
+  await expect(page.getByText("66", { exact: true }).first()).toBeVisible();
 
   const files = await collectFiveDownloads(page);
   const stats = JSON.parse(artifact(files, "_run_stats.json").toString("utf8"));
@@ -117,9 +121,9 @@ test("browser Nanopore fault audit exports exact codons, indel QC, rescue and de
   for (let roundIndex = 0; roundIndex < 3; roundIndex++) {
     const round = `Round ${roundIndex}`;
     const roundStats = stats.statsByRound[round];
-    expect(roundStats.total_reads).toBe(21);
+    expect(roundStats.total_reads).toBe(22);
     expect(roundStats.duplicate_read_ids).toBe(1);
-    expect(roundStats.aligned).toBe(16);
+    expect(roundStats.aligned).toBe(17);
     expect(roundStats.full_qc_passed).toBe(14);
     expect(roundStats.primary_drop_reasons).toEqual({
       alignment_failed: 1,
@@ -129,17 +133,17 @@ test("browser Nanopore fault audit exports exact codons, indel QC, rescue and de
       low_protected_identity: 0,
       low_read_q: 1,
       malformed_fastq: 1,
-      partial_reference: 1,
+      partial_reference: 2,
       protected_indel: 1,
     });
 
     const targets = Object.keys(stats.exactCodonCounts[round]);
     expect(targets).toHaveLength(5);
-    expect(stats.exactCodonCounts[round][targets[0]]).toEqual({ TAT: 12, [selectedCodons[roundIndex]]: 2 });
-    expect(stats.exactCodonCounts[round][targets[1]]).toEqual({ AAC: 14 });
+    expect(stats.exactCodonCounts[round][targets[0]]).toEqual({ TAT: 13, [selectedCodons[roundIndex]]: 2 });
+    expect(stats.exactCodonCounts[round][targets[1]]).toEqual({ AAC: 15 });
     expect(stats.exactCodonCounts[round][targets[2]]).toEqual({ GGC: 13 });
     expect(stats.exactCodonCounts[round][targets[3]]).toEqual({ AAC: 13 });
-    expect(stats.exactCodonCounts[round][targets[4]]).toEqual({ CTG: 13, TAG: 1, TGG: 1 });
+    expect(stats.exactCodonCounts[round][targets[4]]).toEqual({ CTG: 14, TAG: 1, TGG: 1 });
 
     const calls = stats.targetCallability.filter((item: { round: string }) => item.round === round);
     expect(calls.map((item: Record<string, number>) => ({
@@ -150,11 +154,11 @@ test("browser Nanopore fault audit exports exact codons, indel QC, rescue and de
       ambiguous: item.ambiguous,
       stop: item.stop_codon,
     }))).toEqual([
-      { callable: 14, rescued: 1, targetIndel: 2, lowQ: 0, ambiguous: 0, stop: 0 },
-      { callable: 14, rescued: 1, targetIndel: 1, lowQ: 0, ambiguous: 0, stop: 0 },
+      { callable: 15, rescued: 2, targetIndel: 2, lowQ: 0, ambiguous: 0, stop: 0 },
+      { callable: 15, rescued: 2, targetIndel: 1, lowQ: 0, ambiguous: 0, stop: 0 },
       { callable: 13, rescued: 0, targetIndel: 0, lowQ: 1, ambiguous: 0, stop: 0 },
       { callable: 13, rescued: 0, targetIndel: 1, lowQ: 0, ambiguous: 1, stop: 0 },
-      { callable: 15, rescued: 1, targetIndel: 0, lowQ: 0, ambiguous: 0, stop: 1 },
+      { callable: 16, rescued: 2, targetIndel: 0, lowQ: 0, ambiguous: 0, stop: 1 },
     ]);
   }
 
